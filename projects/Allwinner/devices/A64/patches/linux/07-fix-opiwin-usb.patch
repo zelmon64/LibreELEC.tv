@@ -1,0 +1,12 @@
+diff --git a/arch/arm64/boot/dts/allwinner/sun50i-a64-orangepi-win.dts b/arch/arm64/boot/dts/allwinner/sun50i-a64-orangepi-win.dts
+index b0c64f75792c..8974b5a1d3b1 100644
+--- a/arch/arm64/boot/dts/allwinner/sun50i-a64-orangepi-win.dts
++++ b/arch/arm64/boot/dts/allwinner/sun50i-a64-orangepi-win.dts
+@@ -188,6 +188,7 @@
+ 		reg = <0x3a3>;
+ 		interrupt-parent = <&r_intc>;
+ 		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
++		x-powers,drive-vbus-en; /* set N_VBUSEN as output pin */
+ 	};
+ };
+ 

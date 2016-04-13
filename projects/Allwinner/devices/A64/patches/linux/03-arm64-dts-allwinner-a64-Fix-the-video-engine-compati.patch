@@ -1,0 +1,32 @@
+From 4ab88516b097ac8c23e00e7c3a26fbcd16feeefd Mon Sep 17 00:00:00 2001
+From: Paul Kocialkowski <paul.kocialkowski@bootlin.com>
+Date: Mon, 10 Dec 2018 11:14:29 +0100
+Subject: [PATCH] arm64: dts: allwinner: a64: Fix the video engine compatible
+
+When introducing the video-codec node for the video engine, the
+compatible for the H5 was used instead of the compatible for the
+A64. Use the right compatible instead.
+
+Fixes: d60ce24740d2 ("arm64: dts: allwinner: a64: Add Video Engine node")
+Signed-off-by: Paul Kocialkowski <paul.kocialkowski@bootlin.com>
+Signed-off-by: Maxime Ripard <maxime.ripard@bootlin.com>
+---
+ arch/arm64/boot/dts/allwinner/sun50i-a64.dtsi | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/allwinner/sun50i-a64.dtsi b/arch/arm64/boot/dts/allwinner/sun50i-a64.dtsi
+index 837a03dee875..2abb335145a6 100644
+--- a/arch/arm64/boot/dts/allwinner/sun50i-a64.dtsi
++++ b/arch/arm64/boot/dts/allwinner/sun50i-a64.dtsi
+@@ -390,7 +390,7 @@
+ 		};
+ 
+ 		video-codec@1c0e000 {
+-			compatible = "allwinner,sun50i-h5-video-engine";
++			compatible = "allwinner,sun50i-a64-video-engine";
+ 			reg = <0x01c0e000 0x1000>;
+ 			clocks = <&ccu CLK_BUS_VE>, <&ccu CLK_VE>,
+ 				 <&ccu CLK_DRAM_VE>;
+-- 
+2.20.1
+
