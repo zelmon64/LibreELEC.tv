@@ -1,0 +1,26 @@
+From 34d13338b8f0766d68b23c350ce6feb1644c109d Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 16:30:37 -0700
+Subject: [PATCH 08/12] DVDVideoCodecDRMPRIME: add methods to get colorspace
+ and colorrange
+
+---
+ xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h
+index efc7657..c5833dd 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h
+@@ -48,6 +48,8 @@ public:
+   AVDRMFrameDescriptor* GetDescriptor() const { return reinterpret_cast<AVDRMFrameDescriptor*>(m_pFrame->data[0]); }
+   uint32_t GetWidth() const { return m_pFrame->width; }
+   uint32_t GetHeight() const { return m_pFrame->height; }
++  int GetColorSpace() const { return m_pFrame->colorspace; }
++  int GetColorRange() const { return m_pFrame->color_range; }
+ protected:
+   AVFrame* m_pFrame = nullptr;
+ };
+-- 
+2.7.4
+

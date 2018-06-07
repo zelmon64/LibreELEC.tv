@@ -1,0 +1,25 @@
+From d151372dec642ec5a7939c5fd691c6e8d99a72ed Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 14:03:45 -0700
+Subject: [PATCH 07/12] fixup! settings: add setting for PRIME renderer type
+
+---
+ addons/resource.language.en_gb/resources/strings.po | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 524d2f5..35c19f1 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -7208,7 +7208,7 @@ msgctxt "#13465"
+ msgid "OpenGLES"
+ msgstr ""
+ 
+-#empty strings from id 13462 to 13504
++#empty strings from id 13466 to 13504
+ 
+ #: system/settings/settings.xml
+ msgctxt "#13505"
+-- 
+2.7.4
+

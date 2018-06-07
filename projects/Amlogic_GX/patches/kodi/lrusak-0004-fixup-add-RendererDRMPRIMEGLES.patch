@@ -1,0 +1,105 @@
+From 716d4c93e80717bdb745f96aab6e2a8c58ef21fc Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 12:32:15 -0700
+Subject: [PATCH 04/12] fixup! add RendererDRMPRIMEGLES
+
+---
+ .../VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp         |  4 ++--
+ .../VideoRenderers/HwDecRender/DRMPRIMEEGL.h           |  1 -
+ .../HwDecRender/RendererDRMPRIMEGLES.cpp               | 18 +++++++++---------
+ 3 files changed, 11 insertions(+), 12 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp
+index e21aa19..e8f03cf 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp
+@@ -27,8 +27,8 @@
+ #include <drm_fourcc.h>
+ 
+ extern "C" {
+-#include "libavutil/frame.h"
+-#include "libavutil/hwcontext_drm.h"
++#include <libavutil/frame.h>
++#include <libavutil/hwcontext_drm.h>
+ }
+ 
+ void CDRMPRIMETexture::Init(EGLDisplay eglDisplay)
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
+index 60595a3..61d80f3 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
+@@ -22,7 +22,6 @@
+ 
+ #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h"
+ 
+-#define GL_GLEXT_PROTOTYPES
+ #include <GLES2/gl2.h>
+ #include <GLES2/gl2ext.h>
+ 
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+index 92e5e2f..bf0f544 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+@@ -26,8 +26,6 @@
+ #include "ServiceBroker.h"
+ #include "utils/log.h"
+ 
+-#define BUFFER_OFFSET(i) ((char *)NULL + (i))
+-
+ static CWinSystemGbmGLESContext *m_pWinSystem{nullptr};
+ 
+ CRendererDRMPRIMEGLES::~CRendererDRMPRIMEGLES()
+@@ -80,7 +78,7 @@ CRenderInfo CRendererDRMPRIMEGLES::GetRenderInfo()
+   CRenderInfo info;
+   info.max_buffer_size = NUM_BUFFERS;
+   info.optimal_buffer_size = NUM_BUFFERS;
+-  info.opaque_pointer = (void*)this;
++  info.opaque_pointer = static_cast<void*>(this);
+   return info;
+ }
+ 
+@@ -92,8 +90,8 @@ bool CRendererDRMPRIMEGLES::CreateTexture(int index)
+ 
+   DeleteTexture(index);
+ 
+-  memset(&im, 0, sizeof(im));
+-  memset(&plane, 0, sizeof(YUVPLANE));
++  std::memset(&im, 0, sizeof(im));
++  std::memset(&plane, 0, sizeof(YUVPLANE));
+   im.height = m_sourceHeight;
+   im.width  = m_sourceWidth;
+   im.cshift_x = 1;
+@@ -151,6 +149,10 @@ bool CRendererDRMPRIMEGLES::LoadShadersHook()
+ 
+ bool CRendererDRMPRIMEGLES::RenderHook(int index)
+ {
++  CRenderSystemGLES *renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
++  if (!renderSystem)
++    return false;
++
+   YUVPLANE &plane = m_buffers[index].fields[0][0];
+ 
+   glDisable(GL_DEPTH_TEST);
+@@ -158,8 +160,6 @@ bool CRendererDRMPRIMEGLES::RenderHook(int index)
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_EXTERNAL_OES, plane.id);
+ 
+-  CRenderSystemGLES *renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
+-
+   renderSystem->EnableGUIShader(SM_TEXTURE_RGBA_OES);
+ 
+   GLubyte idx[4] = {0, 1, 3, 2}; // Determines order of triangle strip
+@@ -192,8 +192,8 @@ bool CRendererDRMPRIMEGLES::RenderHook(int index)
+   glBindBuffer(GL_ARRAY_BUFFER, vertexVBO);
+   glBufferData(GL_ARRAY_BUFFER, sizeof(PackedVertex)*4, &vertex[0], GL_STATIC_DRAW);
+ 
+-  glVertexAttribPointer(vertLoc, 3, GL_FLOAT, 0, sizeof(PackedVertex), BUFFER_OFFSET(offsetof(PackedVertex, x)));
+-  glVertexAttribPointer(loc, 2, GL_FLOAT, 0, sizeof(PackedVertex), BUFFER_OFFSET(offsetof(PackedVertex, u1)));
++  glVertexAttribPointer(vertLoc, 3, GL_FLOAT, 0, sizeof(PackedVertex), reinterpret_cast<const GLvoid*>(offsetof(PackedVertex, x)));
++  glVertexAttribPointer(loc, 2, GL_FLOAT, 0, sizeof(PackedVertex), reinterpret_cast<const GLvoid*>(offsetof(PackedVertex, u1)));
+ 
+   glEnableVertexAttribArray(vertLoc);
+   glEnableVertexAttribArray(loc);
+-- 
+2.7.4
+

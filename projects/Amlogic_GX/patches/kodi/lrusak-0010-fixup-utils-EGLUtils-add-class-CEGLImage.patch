@@ -1,0 +1,41 @@
+From a207a5ae058686205da0b749b359f9c65ffaf6c7 Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 17:38:56 -0700
+Subject: [PATCH 10/12] fixup! utils/EGLUtils: add class CEGLImage
+
+---
+ xbmc/utils/EGLUtils.cpp | 4 ++--
+ xbmc/utils/EGLUtils.h   | 2 ++
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/utils/EGLUtils.cpp b/xbmc/utils/EGLUtils.cpp
+index 25d0530..4bf2632 100644
+--- a/xbmc/utils/EGLUtils.cpp
++++ b/xbmc/utils/EGLUtils.cpp
+@@ -352,8 +352,8 @@ bool CEGLImage::CreateImage(EglAttrs imageAttrs)
+                {EGL_LINUX_DRM_FOURCC_EXT, static_cast<EGLint>(imageAttrs.format)}});
+ 
+   /* this should be configurable at a later point */
+-  attribs.Add({{EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC601_EXT},
+-               {EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_FULL_RANGE_EXT},
++  attribs.Add({{EGL_YUV_COLOR_SPACE_HINT_EXT, imageAttrs.colorSpace},
++               {EGL_SAMPLE_RANGE_HINT_EXT, imageAttrs.colorRange},
+                {EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_EXT},
+                {EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_EXT}});
+ 
+diff --git a/xbmc/utils/EGLUtils.h b/xbmc/utils/EGLUtils.h
+index 637108d..5c30bfb 100644
+--- a/xbmc/utils/EGLUtils.h
++++ b/xbmc/utils/EGLUtils.h
+@@ -169,6 +169,8 @@ public:
+     int width{0};
+     int height{0};
+     uint32_t format{0};
++    int colorSpace{0};
++    int colorRange{0};
+     std::array<EglPlane, MAX_NUM_PLANES> planes;
+   };
+ 
+-- 
+2.7.4
+

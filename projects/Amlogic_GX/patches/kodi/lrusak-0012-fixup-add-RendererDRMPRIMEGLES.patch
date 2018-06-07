@@ -1,0 +1,45 @@
+From 191039be55a2d35e598537c31122070c613cf3da Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 16:40:09 -0700
+Subject: [PATCH 12/12] fixup! add RendererDRMPRIMEGLES
+
+---
+ .../VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp          | 9 ---------
+ .../VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h            | 1 -
+ 2 files changed, 10 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+index 6383f54..faeb0bc 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+@@ -64,15 +64,6 @@ void CRendererDRMPRIMEGLES::ReleaseBuffer(int index)
+   CLinuxRendererGLES::ReleaseBuffer(index);
+ }
+ 
+-void CRendererDRMPRIMEGLES::AddVideoPicture(const VideoPicture& picture, int index, double currentClock)
+-{
+-  YUVBUFFER &buf = m_buffers[index];
+-  if (buf.videoBuffer)
+-    buf.videoBuffer->Release();
+-  buf.videoBuffer = picture.videoBuffer;
+-  buf.videoBuffer->Acquire();
+-}
+-
+ CRenderInfo CRendererDRMPRIMEGLES::GetRenderInfo()
+ {
+   CRenderInfo info;
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h
+index 064de7d..daec5ef 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h
+@@ -37,7 +37,6 @@ public:
+   // CLinuxRendererGLES overrides
+   bool Configure(const VideoPicture &picture, float fps, unsigned int orientation) override;
+   void ReleaseBuffer(int index) override;
+-  void AddVideoPicture(const VideoPicture& picture, int index, double currentClock);
+ 
+   // Feature support
+   CRenderInfo GetRenderInfo() override;
+-- 
+2.7.4
+

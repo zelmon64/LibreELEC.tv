@@ -1,0 +1,31 @@
+From bd54a746d73a32b9bbfc3057e3051559ae4b0668 Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 13:32:36 -0700
+Subject: [PATCH 06/12] fixup! add RendererDRMPRIMEGLES
+
+---
+ xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
+index 0982539..13c5019 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
+@@ -21,12 +21,10 @@
+ #pragma once
+ 
+ #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h"
+-
+-#include <GLES2/gl2.h>
+-#include <GLES2/gl2ext.h>
+-
+ #include "utils/EGLUtils.h"
+ 
++#include "system_gl.h"
++
+ class CDRMPRIMETexture
+ {
+ public:
+-- 
+2.7.4
+

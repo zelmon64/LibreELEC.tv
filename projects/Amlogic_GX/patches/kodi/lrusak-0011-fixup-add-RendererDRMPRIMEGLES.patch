@@ -1,0 +1,25 @@
+From e9bdc618cd10f73fd131df7b165b4bff0cb20ff2 Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 16:31:37 -0700
+Subject: [PATCH 11/12] fixup! add RendererDRMPRIMEGLES
+
+---
+ xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp
+index e8f03cf..b8c775e 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.cpp
+@@ -63,6 +63,8 @@ bool CDRMPRIMETexture::Map(CVideoBufferDRMPRIME *buffer)
+     attribs.width = m_texWidth;
+     attribs.height = m_texHeight;
+     attribs.format = layer->format;
++    attribs.colorSpace = CEGLUtils::GetColorSpace(buffer->GetColorSpace(), m_texWidth, m_texHeight);
++    attribs.colorRange = CEGLUtils::GetColorRange(buffer->GetColorRange());
+     attribs.planes = planes;
+ 
+     if (!m_eglImage->CreateImage(attribs))
+-- 
+2.7.4
+

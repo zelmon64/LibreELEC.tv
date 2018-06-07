@@ -1,0 +1,61 @@
+From 51a9e6f249c1c57894275d6ed72a04df2a9906f7 Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 13:14:27 -0700
+Subject: [PATCH 05/12] fixup! add RendererDRMPRIMEGLES
+
+---
+ xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h      | 2 +-
+ .../VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp  | 5 ++---
+ .../VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h    | 2 ++
+ 3 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
+index 61d80f3..0982539 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/DRMPRIMEEGL.h
+@@ -41,7 +41,7 @@ protected:
+   CVideoBufferDRMPRIME *m_primebuffer{nullptr};
+   std::unique_ptr<CEGLImage> m_eglImage;
+ 
+-  GLenum m_textureTarget{GL_TEXTURE_EXTERNAL_OES};
++  const GLenum m_textureTarget{GL_TEXTURE_EXTERNAL_OES};
+   GLuint m_texture{0};
+   int m_texWidth{0};
+   int m_texHeight{0};
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+index bf0f544..6383f54 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+@@ -26,7 +26,7 @@
+ #include "ServiceBroker.h"
+ #include "utils/log.h"
+ 
+-static CWinSystemGbmGLESContext *m_pWinSystem{nullptr};
++CWinSystemGbmGLESContext *CRendererDRMPRIMEGLES::m_pWinSystem = nullptr;
+ 
+ CRendererDRMPRIMEGLES::~CRendererDRMPRIMEGLES()
+ {
+@@ -150,8 +150,7 @@ bool CRendererDRMPRIMEGLES::LoadShadersHook()
+ bool CRendererDRMPRIMEGLES::RenderHook(int index)
+ {
+   CRenderSystemGLES *renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
+-  if (!renderSystem)
+-    return false;
++  assert(renderSystem);
+ 
+   YUVPLANE &plane = m_buffers[index].fields[0][0];
+ 
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h
+index b67912d..064de7d 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h
+@@ -51,4 +51,6 @@ protected:
+   bool CreateTexture(int index) override;
+ 
+   CDRMPRIMETexture m_DRMPRIMETextures[NUM_BUFFERS];
++
++  static CWinSystemGbmGLESContext *m_pWinSystem;
+ };
+-- 
+2.7.4
+

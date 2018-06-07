@@ -1,0 +1,75 @@
+From 44c289854ce61b6a7f2ea208a2ed059687b99a2a Mon Sep 17 00:00:00 2001
+From: Lukas Rusak <lorusak@gmail.com>
+Date: Tue, 12 Jun 2018 17:38:34 -0700
+Subject: [PATCH 09/12] CEGLUtils:: add static methods to convert colorspace
+ and colorrange
+
+---
+ xbmc/utils/EGLUtils.cpp | 37 +++++++++++++++++++++++++++++++++++++
+ xbmc/utils/EGLUtils.h   |  2 ++
+ 2 files changed, 39 insertions(+)
+
+diff --git a/xbmc/utils/EGLUtils.cpp b/xbmc/utils/EGLUtils.cpp
+index 9932310..25d0530 100644
+--- a/xbmc/utils/EGLUtils.cpp
++++ b/xbmc/utils/EGLUtils.cpp
+@@ -27,6 +27,43 @@
+ #include <EGL/eglext.h>
+ #include <string.h>
+ 
++int CEGLUtils::GetColorSpace(int colorSpace, int width, int height)
++{
++  switch(colorSpace)
++  {
++    case 10: // BT2020_CL
++    case  9: // BT2020_NCL
++      return EGL_ITU_REC2020_EXT;
++    case  6: // SMPTE 170M
++    case  5: // ITU-R BT.470-2
++    case  4: // FCC
++      return EGL_ITU_REC601_EXT;
++    case  1: // ITU-R Rec.709 (1990) -- BT.709
++      return EGL_ITU_REC709_EXT;
++    case  3: // RESERVED
++    case  2: // UNSPECIFIED
++    default:
++      if(width > 1024 || height >= 600)
++        return EGL_ITU_REC709_EXT;
++      else
++        return EGL_ITU_REC601_EXT;
++      break;
++  }
++}
++
++int CEGLUtils::GetColorRange(int colorRange)
++{
++  switch(colorRange)
++  {
++    case 2: // "JPEG" YUV ranges
++      return EGL_YUV_FULL_RANGE_EXT;
++    case 1: // "MPEG" YUV ranges
++    default:
++      return EGL_YUV_NARROW_RANGE_EXT;
++      break;
++  }
++}
++
+ std::set<std::string> CEGLUtils::GetClientExtensions()
+ {
+   const char* extensions = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+diff --git a/xbmc/utils/EGLUtils.h b/xbmc/utils/EGLUtils.h
+index 461a6b9..637108d 100644
+--- a/xbmc/utils/EGLUtils.h
++++ b/xbmc/utils/EGLUtils.h
+@@ -33,6 +33,8 @@
+ class CEGLUtils
+ {
+ public:
++  static int GetColorSpace(int colorSpace, int width, int height);
++  static int GetColorRange(int colorRange);
+   static std::set<std::string> GetClientExtensions();
+   static std::set<std::string> GetExtensions(EGLDisplay eglDisplay);
+   static bool HasExtension(EGLDisplay eglDisplay, std::string const & name);
+-- 
+2.7.4
+
