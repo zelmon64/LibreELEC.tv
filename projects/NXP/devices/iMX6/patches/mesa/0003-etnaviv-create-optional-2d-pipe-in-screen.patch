@@ -1,0 +1,177 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Tue, 27 Mar 2018 10:46:41 +0200
+Subject: [PATCH] etnaviv: create optional 2d pipe in screen
+
+The 2D pipe is useful to implement fast planar and interleaved YUV buffer
+imports. Not all systems have a 2D capable core, so this is strictly
+optional.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/drivers/etnaviv/etnaviv_context.c |  6 +++
+ src/gallium/drivers/etnaviv/etnaviv_context.h |  1 +
+ src/gallium/drivers/etnaviv/etnaviv_screen.c  | 68 +++++++++++++++++++++++++++
+ src/gallium/drivers/etnaviv/etnaviv_screen.h  |  6 +++
+ 4 files changed, 81 insertions(+)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_context.c b/src/gallium/drivers/etnaviv/etnaviv_context.c
+index 3038d210e109..96cf2f3b59a8 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_context.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_context.c
+@@ -72,6 +72,9 @@ etna_context_destroy(struct pipe_context *pctx)
+    if (ctx->stream)
+       etna_cmd_stream_del(ctx->stream);
+ 
++   if (ctx->stream2d)
++      etna_cmd_stream_del(ctx->stream2d);
++
+    slab_destroy_child(&ctx->transfer_pool);
+ 
+    if (ctx->in_fence_fd != -1)
+@@ -431,6 +434,9 @@ etna_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+    if (ctx->stream == NULL)
+       goto fail;
+ 
++   if (screen->pipe2d)
++      ctx->stream2d = etna_cmd_stream_new(screen->pipe2d, 0x1000, NULL, NULL);
++
+    /* context ctxate setup */
+    ctx->specs = screen->specs;
+    ctx->screen = screen;
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_context.h b/src/gallium/drivers/etnaviv/etnaviv_context.h
+index 584caa77080b..ef2752c61456 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_context.h
++++ b/src/gallium/drivers/etnaviv/etnaviv_context.h
+@@ -109,6 +109,7 @@ struct etna_context {
+    struct etna_specs specs;
+    struct etna_screen *screen;
+    struct etna_cmd_stream *stream;
++   struct etna_cmd_stream *stream2d;
+ 
+    /* which state objects need to be re-emit'd: */
+    enum {
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_screen.c b/src/gallium/drivers/etnaviv/etnaviv_screen.c
+index b0f8b4bebe3e..06e4b551d708 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_screen.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_screen.c
+@@ -90,6 +90,12 @@ etna_screen_destroy(struct pipe_screen *pscreen)
+    if (screen->gpu)
+       etna_gpu_del(screen->gpu);
+ 
++   if (screen->pipe2d)
++      etna_pipe_del(screen->pipe2d);
++
++   if (screen->gpu2d)
++      etna_gpu_del(screen->gpu2d);
++
+    if (screen->ro)
+       FREE(screen->ro);
+ 
+@@ -864,6 +870,66 @@ etna_screen_bo_from_handle(struct pipe_screen *pscreen,
+    return bo;
+ }
+ 
++static void etna_screen_init_2d(struct etna_screen *screen)
++{
++   struct etna_gpu *gpu2d = NULL;
++   uint64_t val;
++   int ret, i;
++
++   /* If the current GPU is a combined 2d/3D core, use it as 2D engine */
++   if (screen->features[0] & chipFeatures_PIPE_2D)
++      gpu2d = screen->gpu;
++
++   /* otherwise search for a 2D capable core */
++   if (!gpu2d) {
++      for (i = 0;; i++) {
++         gpu2d = etna_gpu_new(screen->dev, i);
++         if (!gpu2d)
++            return;
++
++         ret = etna_gpu_get_param(gpu2d, ETNA_GPU_FEATURES_0, &val);
++         if (!ret && (val & chipFeatures_PIPE_2D)) {
++            screen->gpu2d = gpu2d;
++            break;
++         }
++
++         etna_gpu_del(gpu2d);
++      }
++   }
++
++   if (etna_gpu_get_param(screen->gpu2d, ETNA_GPU_FEATURES_0, &val))
++      return;
++   screen->features2d[0] = val;
++
++   if (etna_gpu_get_param(screen->gpu2d, ETNA_GPU_FEATURES_1, &val))
++      return;
++   screen->features2d[1] = val;
++
++   if (etna_gpu_get_param(screen->gpu2d, ETNA_GPU_FEATURES_2, &val))
++      return;
++   screen->features2d[2] = val;
++
++   if (etna_gpu_get_param(screen->gpu2d, ETNA_GPU_FEATURES_3, &val))
++      return;
++   screen->features2d[3] = val;
++
++   if (etna_gpu_get_param(screen->gpu2d, ETNA_GPU_FEATURES_4, &val))
++      return;
++   screen->features2d[4] = val;
++
++   if (etna_gpu_get_param(screen->gpu2d, ETNA_GPU_FEATURES_5, &val))
++      return;
++   screen->features2d[5] = val;
++
++   if (etna_gpu_get_param(screen->gpu2d, ETNA_GPU_FEATURES_6, &val))
++      return;
++   screen->features2d[6] = val;
++
++   screen->pipe2d = etna_pipe_new(gpu2d, ETNA_PIPE_2D);
++   if (!screen->pipe2d)
++      DBG("could not create 2d pipe");
++}
++
+ struct pipe_screen *
+ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
+                    struct renderonly *ro)
+@@ -957,6 +1023,8 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
+    }
+    screen->features[6] = val;
+ 
++   etna_screen_init_2d(screen);
++
+    if (!etna_get_specs(screen))
+       goto fail;
+ 
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_screen.h b/src/gallium/drivers/etnaviv/etnaviv_screen.h
+index bffd4b6ef94a..f529d337ea1d 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_screen.h
++++ b/src/gallium/drivers/etnaviv/etnaviv_screen.h
+@@ -58,6 +58,9 @@ enum viv_features_word {
+ #define VIV_FEATURE(screen, word, feature) \
+    ((screen->features[viv_ ## word] & (word ## _ ## feature)) != 0)
+ 
++#define VIV_2D_FEATURE(screen, word, feature) \
++   ((screen->features2d[viv_ ## word] & (word ## _ ## feature)) != 0)
++
+ struct etna_screen {
+    struct pipe_screen base;
+ 
+@@ -66,7 +69,9 @@ struct etna_screen {
+ 
+    struct etna_device *dev;
+    struct etna_gpu *gpu;
++   struct etna_gpu *gpu2d;
+    struct etna_pipe *pipe;
++   struct etna_pipe *pipe2d;
+    struct etna_perfmon *perfmon;
+    struct renderonly *ro;
+ 
+@@ -76,6 +81,7 @@ struct etna_screen {
+    uint32_t model;
+    uint32_t revision;
+    uint32_t features[VIV_FEATURES_WORD_COUNT];
++   uint32_t features2d[VIV_FEATURES_WORD_COUNT];
+ 
+    struct etna_specs specs;
+ 

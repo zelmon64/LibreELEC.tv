@@ -1,0 +1,46 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 4 Jul 2018 15:19:17 +0200
+Subject: [PATCH] st/dri: allow create image for formats that only support SV
+ or RT binding
+
+Unconditionally requesting both bindings can lead to premature
+failure to create a valid image.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/state_trackers/dri/dri2.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/state_trackers/dri/dri2.c b/src/gallium/state_trackers/dri/dri2.c
+index e7d188ef90fe..d0acbde83d34 100644
+--- a/src/gallium/state_trackers/dri/dri2.c
++++ b/src/gallium/state_trackers/dri/dri2.c
+@@ -979,9 +979,10 @@ dri2_create_image_common(__DRIscreen *_screen,
+ {
+    const struct dri2_format_mapping *map = dri2_get_mapping_by_format(format);
+    struct dri_screen *screen = dri_screen(_screen);
++   struct pipe_screen *pscreen = screen->base.screen;
+    __DRIimage *img;
+    struct pipe_resource templ;
+-   unsigned tex_usage;
++   unsigned tex_usage = 0;
+ 
+    if (!map)
+       return NULL;
+@@ -991,7 +992,15 @@ dri2_create_image_common(__DRIscreen *_screen,
+     */
+    assert(!(use && (modifiers != NULL)));
+ 
+-   tex_usage = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
++   if (pscreen->is_format_supported(pscreen, map->pipe_format, screen->target,
++                                    0, PIPE_BIND_RENDER_TARGET))
++      tex_usage |= PIPE_BIND_RENDER_TARGET;
++   if (pscreen->is_format_supported(pscreen, map->pipe_format, screen->target,
++                                    0, PIPE_BIND_SAMPLER_VIEW))
++      tex_usage |= PIPE_BIND_SAMPLER_VIEW;
++
++   if (!tex_usage)
++      return NULL;
+ 
+    if (use & __DRI_IMAGE_USE_SCANOUT)
+       tex_usage |= PIPE_BIND_SCANOUT;

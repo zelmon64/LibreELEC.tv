@@ -1,0 +1,32 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Thu, 5 Jul 2018 18:16:55 +0200
+Subject: [PATCH] etnaviv: reject imports of tiler incompatible linear buffers
+
+We don't have a fallback to get them into a render/sampler compatible
+layout (yet). Rejecting the import at least forwards this issue to the
+client application, which might have a way to deal with this.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/drivers/etnaviv/etnaviv_resource.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_resource.c b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+index ecdaad0abb01..16d3cb2402a6 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_resource.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+@@ -525,6 +525,14 @@ etna_resource_from_handle(struct pipe_screen *pscreen,
+    level->width = tmpl->width0;
+    level->height = tmpl->height0;
+ 
++   /* Reject imports of linear buffers if they have a blocksize incompatible
++    * with the hardware tiler, as we don't have a fallback path to get them into
++    * a render/sampler compatible layout.
++    */
++   if (rsc->layout == ETNA_LAYOUT_LINEAR && !screen->specs.use_blt &&
++       util_format_get_blocksize(prsc->format) == 1)
++      goto fail;
++
+    /* Determine padding of the imported resource. */
+    unsigned paddingX = 0, paddingY = 0;
+    etna_layout_multiple(rsc->layout, screen->specs.pixel_pipes,

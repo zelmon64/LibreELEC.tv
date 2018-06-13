@@ -1,0 +1,26 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 23 May 2018 17:09:48 +0200
+Subject: [PATCH] etnaviv: clear out next pointer when allocating resource
+
+We copy the template resource content into the newly allocated resource.
+If the template derived from a planar resource this leads to a non reference
+counted copy of the next resource pointer. Make sure to clear this out when
+allocating a new resource.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/drivers/etnaviv/etnaviv_resource.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_resource.c b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+index c600eff45cef..b99378ec188e 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_resource.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+@@ -269,6 +269,7 @@ etna_resource_alloc(struct pipe_screen *pscreen, unsigned layout,
+       return NULL;
+ 
+    rsc->base = *templat;
++   rsc->base.next = NULL;
+    rsc->base.screen = pscreen;
+    rsc->base.nr_samples = nr_samples;
+    rsc->layout = layout;

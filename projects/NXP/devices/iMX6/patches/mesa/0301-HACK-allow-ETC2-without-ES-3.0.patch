@@ -1,0 +1,25 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Tue, 20 Mar 2018 17:27:42 +0100
+Subject: [PATCH] HACK: allow ETC2 without ES 3.0
+
+Etnaviv on GC3000 supports ETC2, but there is currently no way to
+advertise it without going the full way to expose GLES 3.0 support.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/mesa/main/glformats.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/mesa/main/glformats.c b/src/mesa/main/glformats.c
+index 2100fcf54fe0..86d3f51897f8 100644
+--- a/src/mesa/main/glformats.c
++++ b/src/mesa/main/glformats.c
+@@ -1395,7 +1395,7 @@ _mesa_is_compressed_format(const struct gl_context *ctx, GLenum format)
+       return _mesa_is_gles(ctx)
+          && ctx->Extensions.OES_compressed_ETC1_RGB8_texture;
+    case MESA_FORMAT_LAYOUT_ETC2:
+-      return _mesa_is_gles3(ctx) || ctx->Extensions.ARB_ES3_compatibility;
++	return GL_TRUE;
+    case MESA_FORMAT_LAYOUT_BPTC:
+       return _mesa_is_desktop_gl(ctx) &&
+          ctx->Extensions.ARB_texture_compression_bptc;

@@ -1,0 +1,100 @@
+From: "Wladimir J. van der Laan" <laanwj@gmail.com>
+Date: Tue, 21 Nov 2017 17:55:50 +0100
+Subject: [PATCH] gallium: Make blitter use TEXCOORD instead of GENERIC
+ semantic
+
+For the blitter's passthrough shaders use the TEXCOORD semantic
+instead of GENERIC. This works around a flat shading issue in the
+etnaviv driver, so that mipmap generation works again.
+
+Signed-off-by: Wladimir J. van der Laan <laanwj@gmail.com>
+---
+ src/gallium/auxiliary/util/u_blitter.c        | 10 +++++-----
+ src/gallium/auxiliary/util/u_simple_shaders.c |  8 ++++----
+ 2 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/src/gallium/auxiliary/util/u_blitter.c b/src/gallium/auxiliary/util/u_blitter.c
+index 4748627fc523..43d82cacacc3 100644
+--- a/src/gallium/auxiliary/util/u_blitter.c
++++ b/src/gallium/auxiliary/util/u_blitter.c
+@@ -360,7 +360,7 @@ static void *get_vs_passthrough_pos_generic(struct blitter_context *blitter)
+ 
+    if (!ctx->vs) {
+       static const enum tgsi_semantic semantic_names[] =
+-         { TGSI_SEMANTIC_POSITION, TGSI_SEMANTIC_GENERIC };
++         { TGSI_SEMANTIC_POSITION, TGSI_SEMANTIC_TEXCOORD };
+       const uint semantic_indices[] = { 0, 0 };
+       ctx->vs =
+          util_make_vertex_passthrough_shader(pipe, 2, semantic_names,
+@@ -417,7 +417,7 @@ static void bind_fs_write_one_cbuf(struct blitter_context_priv *ctx)
+    if (!ctx->fs_write_one_cbuf) {
+       assert(!ctx->cached_all_shaders);
+       ctx->fs_write_one_cbuf =
+-         util_make_fragment_passthrough_shader(pipe, TGSI_SEMANTIC_GENERIC,
++         util_make_fragment_passthrough_shader(pipe, TGSI_SEMANTIC_TEXCOORD,
+                                                TGSI_INTERPOLATE_CONSTANT, false);
+    }
+ 
+@@ -431,7 +431,7 @@ static void bind_fs_write_all_cbufs(struct blitter_context_priv *ctx)
+    if (!ctx->fs_write_all_cbufs) {
+       assert(!ctx->cached_all_shaders);
+       ctx->fs_write_all_cbufs =
+-         util_make_fragment_passthrough_shader(pipe, TGSI_SEMANTIC_GENERIC,
++         util_make_fragment_passthrough_shader(pipe, TGSI_SEMANTIC_TEXCOORD,
+                                                TGSI_INTERPOLATE_CONSTANT, true);
+    }
+ 
+@@ -1209,11 +1209,11 @@ void util_blitter_cache_all_shaders(struct blitter_context *blitter)
+    ctx->fs_empty = util_make_empty_fragment_shader(pipe);
+ 
+    ctx->fs_write_one_cbuf =
+-      util_make_fragment_passthrough_shader(pipe, TGSI_SEMANTIC_GENERIC,
++      util_make_fragment_passthrough_shader(pipe, TGSI_SEMANTIC_TEXCOORD,
+                                             TGSI_INTERPOLATE_CONSTANT, false);
+ 
+    ctx->fs_write_all_cbufs =
+-      util_make_fragment_passthrough_shader(pipe, TGSI_SEMANTIC_GENERIC,
++      util_make_fragment_passthrough_shader(pipe, TGSI_SEMANTIC_TEXCOORD,
+                                             TGSI_INTERPOLATE_CONSTANT, true);
+ 
+    ctx->cached_all_shaders = true;
+diff --git a/src/gallium/auxiliary/util/u_simple_shaders.c b/src/gallium/auxiliary/util/u_simple_shaders.c
+index 4046ab1202b2..f7b04feaa039 100644
+--- a/src/gallium/auxiliary/util/u_simple_shaders.c
++++ b/src/gallium/auxiliary/util/u_simple_shaders.c
+@@ -311,7 +311,7 @@ util_make_fragment_tex_shader_writemask(struct pipe_context *pipe,
+    ureg_DECL_sampler_view(ureg, 0, tex_target, stype, stype, stype, stype);
+ 
+    tex = ureg_DECL_fs_input( ureg, 
+-                             TGSI_SEMANTIC_GENERIC, 0, 
++                             TGSI_SEMANTIC_TEXCOORD, 0,
+                              interp_mode );
+ 
+    out = ureg_DECL_output( ureg, 
+@@ -408,7 +408,7 @@ util_make_fragment_tex_shader_writedepth(struct pipe_context *pipe,
+                           TGSI_RETURN_TYPE_FLOAT);
+ 
+    tex = ureg_DECL_fs_input( ureg,
+-                             TGSI_SEMANTIC_GENERIC, 0,
++                             TGSI_SEMANTIC_TEXCOORD, 0,
+                              interp_mode );
+ 
+    out = ureg_DECL_output( ureg,
+@@ -466,7 +466,7 @@ util_make_fragment_tex_shader_writedepthstencil(struct pipe_context *pipe,
+                           TGSI_RETURN_TYPE_UINT);
+ 
+    tex = ureg_DECL_fs_input( ureg,
+-                             TGSI_SEMANTIC_GENERIC, 0,
++                             TGSI_SEMANTIC_TEXCOORD, 0,
+                              interp_mode );
+ 
+    out = ureg_DECL_output( ureg,
+@@ -525,7 +525,7 @@ util_make_fragment_tex_shader_writestencil(struct pipe_context *pipe,
+                           TGSI_RETURN_TYPE_UINT);
+ 
+    tex = ureg_DECL_fs_input( ureg,
+-                             TGSI_SEMANTIC_GENERIC, 0,
++                             TGSI_SEMANTIC_TEXCOORD, 0,
+                              interp_mode );
+ 
+    out = ureg_DECL_output( ureg,

@@ -1,0 +1,40 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 4 Jul 2018 15:17:39 +0200
+Subject: [PATCH] etnaviv: export etna_submit_rs_state
+
+The new 2D YUV blit needs this in some cases, so make it available.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/drivers/etnaviv/etnaviv_rs.c | 2 +-
+ src/gallium/drivers/etnaviv/etnaviv_rs.h | 4 ++++
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_rs.c b/src/gallium/drivers/etnaviv/etnaviv_rs.c
+index b52d39364608..389ee89fef70 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_rs.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_rs.c
+@@ -172,7 +172,7 @@ etna_modify_rs_clearbits(struct compiled_rs_state *cs, uint32_t clear_bits)
+ 
+ /* submit RS state, without any processing and no dependence on context
+  * except TS if this is a source-to-destination blit. */
+-static void
++void
+ etna_submit_rs_state(struct etna_context *ctx,
+                      const struct compiled_rs_state *cs)
+ {
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_rs.h b/src/gallium/drivers/etnaviv/etnaviv_rs.h
+index 125a13a9ad34..81ef05955a79 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_rs.h
++++ b/src/gallium/drivers/etnaviv/etnaviv_rs.h
+@@ -84,6 +84,10 @@ void
+ etna_compile_rs_state(struct etna_context *ctx, struct compiled_rs_state *cs,
+                       const struct rs_state *rs);
+ 
++void
++etna_submit_rs_state(struct etna_context *ctx,
++                     const struct compiled_rs_state *cs);
++
+ /* Context initialization for RS clear_blit functions. */
+ void
+ etna_clear_blit_rs_init(struct pipe_context *pctx);
