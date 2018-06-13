@@ -1,0 +1,30 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Fri, 17 Feb 2017 18:30:59 +0100
+Subject: [PATCH] driver core: unbind consumers before locking parent on device
+ unbind
+
+On forced unbind the parent lock is taken, as the device might be a USB
+device. The device to be unbound might have active consumers, which
+must be unbound before calling device_release_driver(), otherwise this
+function might deadlock when trying to take the parent lock during
+consumer unbind.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ drivers/base/bus.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/base/bus.c b/drivers/base/bus.c
+index ef6183306b40..408a73d8cb32 100644
+--- a/drivers/base/bus.c
++++ b/drivers/base/bus.c
+@@ -184,6 +184,9 @@ static ssize_t unbind_store(struct device_driver *drv, const char *buf,
+ 
+ 	dev = bus_find_device_by_name(bus, NULL, buf);
+ 	if (dev && dev->driver == drv) {
++		while (device_links_busy(dev)) {
++			device_links_unbind_consumers(dev);
++		}
+ 		if (dev->parent)	/* Needed for USB */
+ 			device_lock(dev->parent);
+ 		device_release_driver(dev);

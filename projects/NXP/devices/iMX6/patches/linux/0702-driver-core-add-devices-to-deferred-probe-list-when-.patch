@@ -1,0 +1,53 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 8 Mar 2017 12:34:11 +0100
+Subject: [PATCH] driver core: add devices to deferred probe list when
+ unbinding consumers
+
+When a device is unbound due to the provider of one of the resources going
+away, add it to the deferred probe list. This way the consumer device
+driver gets a chance to rebind itself if the provider is rebound later on.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ drivers/base/base.h | 1 +
+ drivers/base/core.c | 1 +
+ drivers/base/dd.c   | 2 +-
+ 3 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/base/base.h b/drivers/base/base.h
+index d800de650fa5..39370eb6f006 100644
+--- a/drivers/base/base.h
++++ b/drivers/base/base.h
+@@ -114,6 +114,7 @@ extern void device_release_driver_internal(struct device *dev,
+ 
+ extern void driver_detach(struct device_driver *drv);
+ extern int driver_probe_device(struct device_driver *drv, struct device *dev);
++extern void driver_deferred_probe_add(struct device *dev);
+ extern void driver_deferred_probe_del(struct device *dev);
+ static inline int driver_match_device(struct device_driver *drv,
+ 				      struct device *dev)
+diff --git a/drivers/base/core.c b/drivers/base/core.c
+index b610816eb887..439dfe169f6f 100644
+--- a/drivers/base/core.c
++++ b/drivers/base/core.c
+@@ -582,6 +582,7 @@ void device_links_unbind_consumers(struct device *dev)
+ 
+ 			device_release_driver_internal(consumer, NULL,
+ 						       consumer->parent);
++			driver_deferred_probe_add(consumer);
+ 			put_device(consumer);
+ 			goto start;
+ 		}
+diff --git a/drivers/base/dd.c b/drivers/base/dd.c
+index c9f54089429b..ecb515542ead 100644
+--- a/drivers/base/dd.c
++++ b/drivers/base/dd.c
+@@ -140,7 +140,7 @@ static void deferred_probe_work_func(struct work_struct *work)
+ }
+ static DECLARE_WORK(deferred_probe_work, deferred_probe_work_func);
+ 
+-static void driver_deferred_probe_add(struct device *dev)
++void driver_deferred_probe_add(struct device *dev)
+ {
+ 	mutex_lock(&deferred_probe_mutex);
+ 	if (list_empty(&dev->p->deferred_probe)) {

@@ -1,0 +1,27 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Thu, 15 Mar 2018 19:54:07 +0100
+Subject: [PATCH] ARM: dts: imx6: RDU2: add reference to i210 node from switch
+ port 0
+
+Some configurations use the switch port 0 as the CPU port, in which
+case we need the phandle to the ethernet device. The bootloader will
+patch in the correct DSA configuration, but as phandles are only
+allocated as needed the base DT needs to include this reference.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+index 352eec269025..384077e12248 100644
+--- a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
++++ b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+@@ -743,6 +743,7 @@
+ 				port@0 {
+ 					reg = <0>;
+ 					label = "gigabit_proc";
++					ethernet = <&i210>;
+ 					phy-handle = <&switchphy0>;
+ 				};
+ 

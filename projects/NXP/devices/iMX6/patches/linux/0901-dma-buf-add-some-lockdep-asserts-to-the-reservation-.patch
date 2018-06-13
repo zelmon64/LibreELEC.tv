@@ -1,0 +1,56 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Tue, 13 Jun 2017 10:26:46 +0200
+Subject: [PATCH] dma-buf: add some lockdep asserts to the reservation object
+ implementation
+
+This adds lockdep asserts to the reservation functions which state in their
+documentation that obj->lock must be held. Allows builds with PROVE_LOCKING
+enabled to check that the locking requirements are met.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+v2: remove erroneous check from reservation_object_get_excl
+---
+ drivers/dma-buf/reservation.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/dma-buf/reservation.c b/drivers/dma-buf/reservation.c
+index 314eb1071cce..f0a1178c26a1 100644
+--- a/drivers/dma-buf/reservation.c
++++ b/drivers/dma-buf/reservation.c
+@@ -71,6 +71,8 @@ int reservation_object_reserve_shared(struct reservation_object *obj)
+ 	struct reservation_object_list *fobj, *old;
+ 	u32 max;
+ 
++	reservation_object_assert_held(obj);
++
+ 	old = reservation_object_get_list(obj);
+ 
+ 	if (old && old->shared_max) {
+@@ -227,6 +229,8 @@ void reservation_object_add_shared_fence(struct reservation_object *obj,
+ {
+ 	struct reservation_object_list *old, *fobj = obj->staged;
+ 
++	reservation_object_assert_held(obj);
++
+ 	old = reservation_object_get_list(obj);
+ 	obj->staged = NULL;
+ 
+@@ -252,6 +256,8 @@ void reservation_object_add_excl_fence(struct reservation_object *obj,
+ 	struct reservation_object_list *old;
+ 	u32 i = 0;
+ 
++	reservation_object_assert_held(obj);
++
+ 	old = reservation_object_get_list(obj);
+ 	if (old)
+ 		i = old->shared_count;
+@@ -292,6 +298,8 @@ int reservation_object_copy_fences(struct reservation_object *dst,
+ 	size_t size;
+ 	unsigned i;
+ 
++	reservation_object_assert_held(dst);
++
+ 	rcu_read_lock();
+ 	src_list = rcu_dereference(src->fence);
+ 

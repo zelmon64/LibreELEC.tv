@@ -1,0 +1,29 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Thu, 12 Apr 2018 14:46:12 +0200
+Subject: [PATCH] ARM: dts: imx6: RDU2: adjust brown-out offsets by 25mV
+
+The operating points are adjustend up by 25mV on the RDU2, so we
+have a cumulative margin of 75mV to the minimum required voltage.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+index ea2093ff04a3..e41cc6623be4 100644
+--- a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
++++ b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+@@ -280,10 +280,12 @@
+ 
+ &reg_pu {
+ 	vin-supply = <&sw1c_reg>;
++	anatop-bo-offset-microvolt = <75000>;
+ };
+ 
+ &reg_soc {
+ 	vin-supply = <&sw1c_reg>;
++	anatop-bo-offset-microvolt = <75000>;
+ };
+ 
+ &ldb {

@@ -1,0 +1,31 @@
+From: Andrey Smirnov <andrew.smirnov@gmail.com>
+Date: Mon, 29 Jan 2018 07:53:33 -0800
+Subject: [PATCH] mfd: rave-sp: Bump command timeout to 5 seconds
+
+Command to erase application firmware on RAVE SP takes longer than one
+second (it takes ~3s). Bump command timeout duration to 5 seconds in
+order to avoid bogus timeouts.
+
+Cc: linux-kernel@vger.kernel.org
+Cc: cphealy@gmail.com
+Cc: Lucas Stach <l.stach@pengutronix.de>
+Cc: Lee Jones <lee.jones@linaro.org>
+Cc: Guenter Roeck <linux@roeck-us.net>
+Signed-off-by: Andrey Smirnov <andrew.smirnov@gmail.com>
+---
+ drivers/mfd/rave-sp.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/mfd/rave-sp.c b/drivers/mfd/rave-sp.c
+index 5c858e784a89..c8173de5653a 100644
+--- a/drivers/mfd/rave-sp.c
++++ b/drivers/mfd/rave-sp.c
+@@ -344,7 +344,7 @@ int rave_sp_exec(struct rave_sp *sp,
+ 
+ 	rave_sp_write(sp, data, data_size);
+ 
+-	if (!wait_for_completion_timeout(&reply.received, HZ)) {
++	if (!wait_for_completion_timeout(&reply.received, 5 * HZ)) {
+ 		dev_err(&sp->serdev->dev, "Command timeout\n");
+ 		ret = -ETIMEDOUT;
+ 

@@ -1,0 +1,62 @@
+From: Andrey Smirnov <andrew.smirnov@gmail.com>
+Date: Mon, 27 Mar 2017 05:11:16 -0700
+Subject: [PATCH] ARM: dts: imx6: RDU2: add PIC and subdevices nodes
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi | 40 +++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+diff --git a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+index e41cc6623be4..5a1a0cdddd18 100644
+--- a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
++++ b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+@@ -323,8 +323,48 @@
+ 		compatible = "zii,rave-sp-rdu2";
+ 		current-speed = <1000000>;
+ 
++		#address-cells = <1>;
++		#size-cells = <1>;
++
+ 		watchdog {
+ 			compatible = "zii,rave-sp-watchdog";
++			status = "okay";
++		};
++
++		dds-eeprom@a3 {
++			compatible = "zii,rave-sp-eeprom";
++			reg = <0xa3 0x2000>;
++			status = "okay";
++		};
++
++		main-eeprom@a4 {
++			compatible = "zii,rave-sp-eeprom";
++			reg = <0xa4 0x4000>;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			status = "okay";
++
++			boot_source: boot-source@83 {
++				reg = <0x83 1>;
++			};
++			max_failed_boots: max-failed-boots@8e {
++				reg = <0x8e 2>;
++			};
++		};		
++
++		backlight {
++			compatible = "zii,rave-sp-backlight";
++			status = "okay";
++		};
++
++		leds {
++			compatible = "zii,pic-leds";
++			status = "okay";
++		};
++
++		pwrbutton {
++			compatible = "zii,rave-sp-pwrbutton";
++			status = "okay";
+ 		};
+ 	};
+ };

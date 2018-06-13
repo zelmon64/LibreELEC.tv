@@ -1,0 +1,35 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Fri, 6 Apr 2018 12:11:13 +0200
+Subject: [PATCH] ARM: dts: imx6: RDU2: add eGalax touchscreen
+
+This touchscreen is present instead of the RMI4 touch on some SKUs of
+the RDU2. Keep it disabled by default, the bootloader will enable it
+instead of the RMI4 touch when running on one of those units.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+index cd5c93b33504..d524fb2d57dc 100644
+--- a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
++++ b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+@@ -691,6 +691,17 @@
+ 		};
+ 	};
+ 
++	touchscreen@2a {
++		compatible = "eeti,egalax_ts";
++		pinctrl-names = "default";
++		pinctrl-0 = <&pinctrl_ts>;
++		reg = <0x2a>;
++		interrupt-parent = <&gpio1>;
++		interrupts = <8 IRQ_TYPE_LEVEL_LOW>;
++		wakeup-gpios = <&gpio1 8 GPIO_ACTIVE_LOW>;
++		status = "disabled";
++	};
++
+ 	hpa1: amp@60 {
+ 		compatible = "ti,tpa6130a2";
+ 		pinctrl-names = "default";
