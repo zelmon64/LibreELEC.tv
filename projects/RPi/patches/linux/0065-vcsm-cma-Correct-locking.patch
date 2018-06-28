@@ -1,0 +1,33 @@
+From f8010b0c4888303e2c166bbc246320fbe9d1025d Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 3 May 2018 14:20:54 +0100
+Subject: [PATCH 65/80] vcsm-cma: Correct locking
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/staging/vc04_services/vc-sm-cma/vc_sm.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+index 5afe9af33079..ad744860bca1 100644
+--- a/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+@@ -249,6 +249,7 @@ static void vc_sm_add_resource(struct vc_sm_privdata_t *privdata,
+ static void vc_sm_clean_up_dmabuf(struct vc_sm_buffer *buffer)
+ {
+ 	/* Handle cleaning up imported dmabufs */
++	mutex_lock(&buffer->lock);
+ 	if (buffer->sgt) {
+ 		dma_buf_unmap_attachment(buffer->attach, buffer->sgt,
+ 					 DMA_BIDIRECTIONAL);
+@@ -268,6 +269,7 @@ static void vc_sm_clean_up_dmabuf(struct vc_sm_buffer *buffer)
+ 		dma_buf_put(buffer->dma_buf);
+ 		buffer->dma_buf = NULL;
+ 	}
++	mutex_unlock(&buffer->lock);
+ }
+ 
+ static void vc_sm_destroy_buffer(struct vc_sm_buffer *buffer)
+-- 
+2.17.0
+

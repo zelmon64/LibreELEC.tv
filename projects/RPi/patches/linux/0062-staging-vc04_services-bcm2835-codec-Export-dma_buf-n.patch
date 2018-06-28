@@ -1,0 +1,48 @@
+From 9bd46d5b56a9bc8fb83b56f8e404ee6b46aec9bc Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Mon, 30 Apr 2018 17:11:57 +0100
+Subject: [PATCH 62/80] staging:vc04_services:bcm2835-codec: Export dma_buf,
+ not fd
+
+Use the new videobuf2 call to export the struct dma_buf,
+rather than getting an fd and having to convert it back to a
+struct dma_buf and then close the fd.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../bcm2835-codec/bcm2835-v4l2-codec.c           | 16 +++-------------
+ 1 file changed, 3 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+index a94145857e7a..ccd6a8add5a5 100644
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -1267,22 +1267,12 @@ static int bcm2835_codec_buf_prepare(struct vb2_buffer *vb)
+ 	 * it, so have to accept the fd and work with it.
+ 	 */
+ 	if (!buf->mmal.dma_buf) {
+-		int fd;
+-
+-		ret = vb2_core_expbuf(vb->vb2_queue, &fd,
+-				      vb->vb2_queue->type, vb->index, 0,
+-				      O_CLOEXEC);
++		ret = vb2_core_expbuf_dmabuf(vb->vb2_queue,
++					     vb->vb2_queue->type, vb->index, 0,
++					     O_CLOEXEC, &buf->mmal.dma_buf);
+ 		if (ret)
+ 			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed to expbuf idx %d, ret %d\n",
+ 				 __func__, vb->index, ret);
+-		buf->mmal.dma_buf = dma_buf_get(fd);
+-		v4l2_err(&ctx->dev->v4l2_dev, "%s: Given dma_buf fd %d, %p\n",
+-			 __func__, fd, buf->mmal.dma_buf);
+-		/*
+-		 * Release the fd (and the associated refcount) as we now have
+-		 * a ref to the dma_buf
+-		 */
+-		sys_close(fd);
+ 	} else {
+ 		ret = 0;
+ 	}
+-- 
+2.17.0
+

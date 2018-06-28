@@ -1,0 +1,36 @@
+From 1e15b45db845ec9baeed4bf7bd45653feb4bc9e0 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 1 Mar 2018 11:02:44 +0000
+Subject: [PATCH 49/80] dtoverlay: Add V4L2 decode to the bcm2835-codec
+ overlay.
+
+With encode mainly working, add decode.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ arch/arm/boot/dts/overlays/bcm2835-codec-overlay.dts | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/overlays/bcm2835-codec-overlay.dts b/arch/arm/boot/dts/overlays/bcm2835-codec-overlay.dts
+index 59ec0dbbc043..4c621ed05403 100644
+--- a/arch/arm/boot/dts/overlays/bcm2835-codec-overlay.dts
++++ b/arch/arm/boot/dts/overlays/bcm2835-codec-overlay.dts
+@@ -12,10 +12,14 @@
+ 	fragment@0 {
+ 		target = <&soc>;
+ 		__overlay__ {
+-			v4l2: v4l2 {
++			v4l2_encode: v4l2_encode {
+ 				compatible = "raspberrypi,bcm2835-v4l2-encoder";
+ 				status = "okay";
+ 			};
++			v4l2_decode: v4l2_decode {
++				compatible = "raspberrypi,bcm2835-v4l2-decoder";
++				status = "okay";
++			};
+ 		};
+ 	};
+ 
+-- 
+2.17.0
+

@@ -1,0 +1,268 @@
+From df7e305d2d2fa62fbb62b8ee92b4a3d015983b55 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Fri, 10 Mar 2017 17:35:38 +0000
+Subject: [PATCH 33/80] staging: bcm2835-camera: Remove dead email addresses
+
+None of the listed author email addresses were valid.
+Keep list of authors and the companies they represented.
+Update my email address.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../vc04_services/bcm2835-camera/bcm2835-camera.c        | 9 +++++----
+ .../vc04_services/bcm2835-camera/bcm2835-camera.h        | 9 +++++----
+ drivers/staging/vc04_services/bcm2835-camera/controls.c  | 9 +++++----
+ .../staging/vc04_services/bcm2835-camera/mmal-common.h   | 9 +++++----
+ .../vc04_services/bcm2835-camera/mmal-encodings.h        | 9 +++++----
+ .../vc04_services/bcm2835-camera/mmal-msg-common.h       | 9 +++++----
+ .../vc04_services/bcm2835-camera/mmal-msg-format.h       | 9 +++++----
+ .../staging/vc04_services/bcm2835-camera/mmal-msg-port.h | 9 +++++----
+ drivers/staging/vc04_services/bcm2835-camera/mmal-msg.h  | 9 +++++----
+ .../vc04_services/bcm2835-camera/mmal-parameters.h       | 9 +++++----
+ .../staging/vc04_services/bcm2835-camera/mmal-vchiq.c    | 9 +++++----
+ .../staging/vc04_services/bcm2835-camera/mmal-vchiq.h    | 9 +++++----
+ 12 files changed, 60 insertions(+), 48 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+index 20919000df05..4c9a1b3e88dc 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  */
+ 
+ #include <linux/errno.h>
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.h b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.h
+index 35b4ffd0759f..18af1d607e9c 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  *
+  * core driver device
+  */
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/controls.c b/drivers/staging/vc04_services/bcm2835-camera/controls.c
+index 77a5d6f4e1eb..8a18c832025a 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/controls.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/controls.c
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  */
+ 
+ #include <linux/errno.h>
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-common.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-common.h
+index 5153f40114c6..30e525e2f023 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-common.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-common.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  *
+  * MMAL structures
+  *
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-encodings.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-encodings.h
+index e71d9600b278..1d86f9daad26 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-encodings.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-encodings.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  */
+ #ifndef MMAL_ENCODINGS_H
+ #define MMAL_ENCODINGS_H
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-common.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-common.h
+index 66e8a6edf628..9e92b30cd9bc 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-common.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-common.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  */
+ 
+ #ifndef MMAL_MSG_COMMON_H
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-format.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-format.h
+index 24b002e8df0c..c91cc97cccb3 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-format.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-format.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  */
+ 
+ #ifndef MMAL_MSG_FORMAT_H
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h
+index 84a0f4b717ef..447a3d5a2e14 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  */
+ 
+ /* MMAL_PORT_TYPE_T */
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg.h
+index 52cdf4da1b47..f83b491e62b6 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  */
+ 
+ /* all the data structures which serialise the MMAL protocol. note
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
+index 14307642edf2..b6d0591fc5b2 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  */
+ 
+ /* common parameters */
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+index 5860dffd50c8..5d0c8000bac2 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  *
+  * V4L2 driver MMAL vchiq interface code
+  */
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
+index ed9d7578be50..5f4d0d8d4420 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
+@@ -7,10 +7,11 @@
+  * License.  See the file COPYING in the main directory of this archive
+  * for more details.
+  *
+- * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
+- *          Dave Stevenson <dsteve@broadcom.com>
+- *          Simon Mellor <simellor@broadcom.com>
+- *          Luke Diamand <luked@broadcom.com>
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
+  *
+  * MMAL interface to VCHIQ message passing
+  */
+-- 
+2.17.0
+

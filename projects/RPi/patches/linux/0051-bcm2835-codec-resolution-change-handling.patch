@@ -1,0 +1,1036 @@
+From 22acc082e2ee9517e8a972c3cc4dfc12f98c2d2f Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 6 Mar 2018 15:25:02 +0000
+Subject: [PATCH 51/80] bcm2835-codec: resolution change handling
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../staging/vc04_services/bcm2835-codec/TODO  |  19 ++
+ .../bcm2835-codec/bcm2835-v4l2-codec.c        | 268 ++++++++++++------
+ .../vc04_services/bcm2835-codec/mmal-common.h |   3 +-
+ .../vc04_services/bcm2835-codec/mmal-msg.h    |  28 ++
+ .../vc04_services/bcm2835-codec/mmal-vchiq.c  | 228 ++++++++++++---
+ .../vc04_services/bcm2835-codec/mmal-vchiq.h  |  10 +-
+ 6 files changed, 428 insertions(+), 128 deletions(-)
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/TODO
+
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/TODO b/drivers/staging/vc04_services/bcm2835-codec/TODO
+new file mode 100644
+index 000000000000..96d99c5f5408
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/TODO
+@@ -0,0 +1,19 @@
++1) Convert to be a platform driver.
++
++Right now when the module probes, it tries to initialize VCHI and
++errors out if it wasn't ready yet.  If bcm2835-v4l2 was built in, then
++VCHI generally isn't ready because it depends on both the firmware and
++mailbox drivers having already loaded.
++
++We should have VCHI create a platform device once it's initialized,
++and have this driver bind to it, so that we automatically load the
++v4l2 module after VCHI loads.
++
++2) Support SELECTION API to define crop region on the image.
++
++Particularly for resolutions that aren't a multiple of the macroblock
++size, the codec will report a resolution that is a multiple of the macroblock
++size (it has to have the memory to decode into), and then a different crop
++region within that buffer.
++The most common example is 1080P, where the buffer will be 1920x1088 with a
++crop region of 1920x1080.
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+index 4a65d402723c..c4d1101fee7f 100644
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -81,6 +81,7 @@ struct bcm2835_codec_fmt {
+ 	u32	flags;
+ 	u32	mmal_fmt;
+ 	bool	decode_only;
++	int	size_multiplier_x2;
+ };
+ 
+ /* Supported raw pixel formats. */
+@@ -91,6 +92,7 @@ static struct bcm2835_codec_fmt raw_formats[] = {
+ 		.bytesperline_align = 32,
+ 		.flags = 0,
+ 		.mmal_fmt = MMAL_ENCODING_I420,
++		.size_multiplier_x2 = 3,
+ 	},
+ };
+ 
+@@ -213,13 +215,6 @@ struct bcm2835_codec_dev {
+ 	bool			decode;	 /* Is this instance a decoder? */
+ 	struct vchiq_mmal_instance	*instance;
+ 
+-	struct {
+-		/* number of frames remaining which driver should capture */
+-		unsigned int  frame_count;
+-		/* last frame completion */
+-		struct completion  frame_cmplt;
+-
+-	} capture;
+ 	struct v4l2_m2m_dev	*m2m_dev;
+ };
+ 
+@@ -244,6 +239,7 @@ struct bcm2835_codec_ctx {
+ 	bool aborting;
+ 	int num_ip_buffers;
+ 	int num_op_buffers;
++	struct completion frame_cmplt;
+ };
+ 
+ static inline struct bcm2835_codec_ctx *file2ctx(struct file *file)
+@@ -291,11 +287,8 @@ static int job_ready(void *priv)
+ 	struct bcm2835_codec_ctx *ctx = priv;
+ 
+ 	if (!v4l2_m2m_num_src_bufs_ready(ctx->fh.m2m_ctx) &&
+-	    !v4l2_m2m_num_dst_bufs_ready(ctx->fh.m2m_ctx)) {
+-		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,
+-			 "Not enough buffers available\n");
++	    !v4l2_m2m_num_dst_bufs_ready(ctx->fh.m2m_ctx))
+ 		return 0;
+-	}
+ 
+ 	return 1;
+ }
+@@ -321,6 +314,8 @@ static void setup_mmal_port_format(struct bcm2835_codec_q_data *q_data,
+ 	port->es.video.crop.height = q_data->height;
+ 	port->es.video.frame_rate.num = 0;
+ 	port->es.video.frame_rate.den = 1;
++
++	port->current_buffer.size = q_data->sizeimage;
+ };
+ 
+ static void ip_buffer_cb(struct vchiq_mmal_instance *instance,
+@@ -331,8 +326,9 @@ static void ip_buffer_cb(struct vchiq_mmal_instance *instance,
+ 	struct m2m_mmal_buffer *buf =
+ 			container_of(mmal_buf, struct m2m_mmal_buffer, mmal);
+ 
+-	v4l2_err(&ctx->dev->v4l2_dev, "%s: port %p buf %p length %lu, flags %x\n",
+-		 __func__, port, mmal_buf, mmal_buf->length, mmal_buf->mmal_flags);
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: port %p buf %p length %lu, flags %x\n",
++		 __func__, port, mmal_buf, mmal_buf->length,
++		 mmal_buf->mmal_flags);
+ 
+ 	if (status != 0) {
+ 		/* error in transfer */
+@@ -345,14 +341,34 @@ static void ip_buffer_cb(struct vchiq_mmal_instance *instance,
+ 		}
+ 		return;
+ 	}
++	if (mmal_buf->cmd) {
++		v4l2_err(&ctx->dev->v4l2_dev, "%s: Not expecting cmd msgs on ip callback - %08x\n",
++			 __func__, mmal_buf->cmd);
++	}
+ 
+-	v4l2_err(&ctx->dev->v4l2_dev, "%s: no error. Return buffer %p\n",
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: no error. Return buffer %p\n",
+ 		 __func__, &buf->m2m.vb.vb2_buf);
+ 	vb2_buffer_done(&buf->m2m.vb.vb2_buf, VB2_BUF_STATE_DONE);
+ 
+ 	ctx->num_ip_buffers++;
+-	v4l2_err(&ctx->dev->v4l2_dev, "%s: done %d input buffers\n", __func__,
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: done %d input buffers\n", __func__,
+ 			ctx->num_ip_buffers);
++
++	if (!port->enabled)
++		complete(&ctx->frame_cmplt);
++}
++
++static void queue_res_chg_event(struct bcm2835_codec_ctx *ctx)
++{
++	static const struct v4l2_event ev_src_ch = {
++		.type = V4L2_EVENT_SOURCE_CHANGE,
++		.u.src_change.changes =
++		V4L2_EVENT_SRC_CH_RESOLUTION,
++	};
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "resolution_changed\n");
++
++	v4l2_event_queue_fh(&ctx->fh, &ev_src_ch);
+ }
+ 
+ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
+@@ -360,59 +376,101 @@ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
+ 			 struct mmal_buffer *mmal_buf)
+ {
+ 	struct bcm2835_codec_ctx *ctx = port->cb_ctx;
+-
+-	v4l2_err(&ctx->dev->v4l2_dev, "%s: length %lu, flags %x\n", __func__,
+-		 mmal_buf->length, mmal_buf->mmal_flags);
++	struct m2m_mmal_buffer *buf;
++	struct vb2_v4l2_buffer *vb2;
+ 
+ 	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,
+ 		 "%s: status:%d, buf:%p, length:%lu, flags %u, pts %lld\n",
+-		 __func__, status, NULL, mmal_buf->length, mmal_buf->mmal_flags,
++		 __func__, status, mmal_buf, mmal_buf->length, mmal_buf->mmal_flags,
+ 		 mmal_buf->pts);
+ 
+ 	if (status != 0) {
+ 		/* error in transfer */
+-		if (mmal_buf->vb2) {
++		if (vb2) {
+ 			/* there was a buffer with the error so return it */
+-			vb2_buffer_done(&mmal_buf->vb2->vb2_buf,
+-					VB2_BUF_STATE_ERROR);
+-		} else {
+-			v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,
+-				 "%s: Error (%d) but no vb2 buf!!!\n", __func__,
+-				 status);
++			vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_ERROR);
++		}
++		return;
++	}
++
++	if (mmal_buf->cmd) {
++		v4l2_err(&ctx->dev->v4l2_dev, "%s: event on output callback - %08x\n",
++		 __func__, mmal_buf->cmd);
++		switch (mmal_buf->cmd) {
++		case MMAL_EVENT_FORMAT_CHANGED: //MMAL_FOURCC('E', 'F', 'C', 'H'):
++		{
++			struct bcm2835_codec_q_data *q_data;
++			struct mmal_msg_event_format_changed *format =
++				(struct mmal_msg_event_format_changed *)mmal_buf->buffer;
++			v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Format changed: buff size min %u, rec %u, buff num min %u, rec %u\n",
++				 __func__,
++				 format->buffer_size_min,
++				 format->buffer_size_recommended,
++				 format->buffer_num_min,
++				 format->buffer_num_recommended
++				);
++			if (format->format.type != MMAL_ES_TYPE_VIDEO) {
++				v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Format changed but not video %u\n",
++					 __func__, format->format.type);
++				return;
++			}
++			v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Format changed is video %u\n",
++				__func__, format->format.type);
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Format changed to %ux%u, crop %ux%u\n",
++				 __func__, format->es.video.width,
++				 format->es.video.height,
++				 format->es.video.crop.width,
++				 format->es.video.crop.height);
++
++			q_data = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_CAPTURE);
++			q_data->width = format->es.video.crop.width;
++			q_data->height = format->es.video.crop.height;
++			q_data->bytesperline = ALIGN(format->es.video.width, 32);
++			q_data->sizeimage = format->buffer_size_min;
++
++			queue_res_chg_event(ctx);
++			break;
++		}
++		default:
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Unexpected event on output callback - %08x\n",
++			 __func__, mmal_buf->cmd);
++			break;
+ 		}
+ 		return;
+ 	}
+ 
++	buf = container_of(mmal_buf, struct m2m_mmal_buffer, mmal);
++	vb2 = &buf->m2m.vb;
++
++	v4l2_err(&ctx->dev->v4l2_dev, "%s: length %lu, flags %x, idx %u\n", __func__,
++		 mmal_buf->length, mmal_buf->mmal_flags, vb2->vb2_buf.index);
++
+ 	if (mmal_buf->length == 0) {
+ 		/* stream ended */
+-		if (mmal_buf->vb2) {
+-			/* this should only ever happen if the port is
+-			 * disabled and there are buffers still queued
+-			 */
+-			pr_debug("%s: Empty buffer", __func__);
+-			vb2_buffer_done(&mmal_buf->vb2->vb2_buf,
+-					VB2_BUF_STATE_ERROR);
+-		} else {
+-			/* signal frame completion */
+-			//complete(&dev->capture.frame_cmplt);
+-			v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,
+-				 "%s: Empty buffer but no vb2 buf!!!",
+-				 __func__);
+-		}
++		/* this should only ever happen if the port is
++		 * disabled and there are buffers still queued
++		 */
++		pr_debug("%s: Empty buffer", __func__);
++		vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_ERROR);
++		if (!port->enabled)
++			complete(&ctx->frame_cmplt);
+ 		return;
+ 	}
+ 
+-	mmal_buf->vb2->vb2_buf.timestamp = mmal_buf->pts;
++	vb2->vb2_buf.timestamp = mmal_buf->pts;
+ 
+-	vb2_set_plane_payload(&mmal_buf->vb2->vb2_buf, 0, mmal_buf->length);
++	vb2_set_plane_payload(&vb2->vb2_buf, 0, mmal_buf->length);
+ 	if (mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_KEYFRAME)
+-		mmal_buf->vb2->flags |= V4L2_BUF_FLAG_KEYFRAME;
++		vb2->flags |= V4L2_BUF_FLAG_KEYFRAME;
+ 
+-	vb2_buffer_done(&mmal_buf->vb2->vb2_buf, VB2_BUF_STATE_DONE);
++	vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_DONE);
+ 	ctx->num_op_buffers++;
+ 
+ 	v4l2_err(&ctx->dev->v4l2_dev, "%s: done %d output buffers\n", __func__,
+ 			ctx->num_op_buffers);
++
++	if (!port->enabled)
++		complete(&ctx->frame_cmplt);
+ }
+ 
+ /* vb2_to_mmal_buffer() - converts vb2 buffer header to MMAL
+@@ -420,14 +478,15 @@ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
+  * Copies all the required fields from a VB2 buffer to the MMAL buffer header,
+  * ready for sending to the VPU.
+  */
+-static void vb2_to_mmal_buffer(struct m2m_mmal_buffer *buf)
++static void vb2_to_mmal_buffer(struct m2m_mmal_buffer *buf,
++			       struct vb2_v4l2_buffer *vb2)
+ {
+ 	buf->mmal.mmal_flags = 0;
+-	if (buf->mmal.vb2->flags & V4L2_BUF_FLAG_KEYFRAME)
++	if (vb2->flags & V4L2_BUF_FLAG_KEYFRAME)
+ 		buf->mmal.mmal_flags |= MMAL_BUFFER_HEADER_FLAG_KEYFRAME;
+ 
+-	buf->mmal.length = buf->mmal.vb2->vb2_buf.planes[0].bytesused;
+-	buf->mmal.pts = buf->mmal.vb2->vb2_buf.timestamp;
++	buf->mmal.length = vb2->vb2_buf.planes[0].bytesused;
++	buf->mmal.pts = vb2->vb2_buf.timestamp;
+ 	buf->mmal.dts = MMAL_TIME_UNKNOWN;
+ }
+ 
+@@ -452,7 +511,7 @@ static void device_run(void *priv)
+ 	if (src_buf) {
+ 		m2m = container_of(src_buf, struct v4l2_m2m_buffer, vb);
+ 		src_m2m_buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
+-		vb2_to_mmal_buffer(src_m2m_buf);
++		vb2_to_mmal_buffer(src_m2m_buf, src_buf);
+ 
+ 		ret = vchiq_mmal_submit_buffer(dev->instance,
+ 					       &ctx->component->input[0],
+@@ -466,7 +525,7 @@ static void device_run(void *priv)
+ 	if (dst_buf) {
+ 		m2m = container_of(dst_buf, struct v4l2_m2m_buffer, vb);
+ 		dst_m2m_buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
+-		vb2_to_mmal_buffer(dst_m2m_buf);
++		vb2_to_mmal_buffer(dst_m2m_buf, dst_buf);
+ 
+ 		ret = vchiq_mmal_submit_buffer(dev->instance,
+ 					       &ctx->component->output[0],
+@@ -591,19 +650,18 @@ static int vidioc_try_fmt(struct v4l2_format *f, struct bcm2835_codec_fmt *fmt)
+ 		f->fmt.pix.bytesperline =
+ 				ALIGN((f->fmt.pix.width * fmt->depth) >> 3,
+ 				      fmt->bytesperline_align);
+-		f->fmt.pix.sizeimage = f->fmt.pix.height * f->fmt.pix.bytesperline;
++		f->fmt.pix.sizeimage = (ALIGN(f->fmt.pix.height, 16) *
++					f->fmt.pix.bytesperline *
++					fmt->size_multiplier_x2) >> 1;
+ 	} else {
+ 		f->fmt.pix.bytesperline = 0;
+ 		f->fmt.pix.sizeimage = DEFAULT_COMPRESSED_BUF_SIZE;
+ 	}
+ 
+ 	f->fmt.pix.field = V4L2_FIELD_NONE;
+-	pr_err("%s: fmt %08X, size %dx%d, bpl %d, size %d\n", __func__,
+-		f->fmt.pix.pixelformat,
+-		f->fmt.pix.width,
+-		f->fmt.pix.height,
+-		f->fmt.pix.bytesperline,
+-		f->fmt.pix.sizeimage);
++	pr_err("%s: fmt %08x, size %dx%d, bpl %d, size %d\n", __func__,
++	       f->fmt.pix.pixelformat, f->fmt.pix.width, f->fmt.pix.height,
++	       f->fmt.pix.bytesperline, f->fmt.pix.sizeimage);
+ 
+ 	return 0;
+ }
+@@ -677,28 +735,29 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f)
+ 	q_data->width	= f->fmt.pix.width;
+ 	q_data->height	= f->fmt.pix.height;
+ 
+-	if (!q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED)
++	if (!q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED) {
+ 		f->fmt.pix.bytesperline =
+ 				ALIGN((f->fmt.pix.width * q_data->fmt->depth) >> 3,
+ 				      q_data->fmt->bytesperline_align);
+-	else
++		q_data->sizeimage = f->fmt.pix.sizeimage;
++	} else {
+ 		f->fmt.pix.bytesperline = 0;
++		q_data->sizeimage = DEFAULT_COMPRESSED_BUF_SIZE;
++	}
+ 
+ 	setup_mmal_port_format(q_data, port);
+-
+ 	ret = vchiq_mmal_port_set_format(ctx->dev->instance, port);
+ 	if (ret)
+ 		v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed vchiq_mmal_port_set_format on port, ret %d\n",
+ 			 __func__, ret);
+ 
+-	if (q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED)
+-		q_data->sizeimage = DEFAULT_COMPRESSED_BUF_SIZE;
+-	else
+-		q_data->sizeimage = port->recommended_buffer.size;
++	if (q_data->sizeimage < port->minimum_buffer.size)
++		v4l2_err(&ctx->dev->v4l2_dev, "%s: Current buffer size of %u < min buf size %u\n",
++			 __func__, q_data->sizeimage, port->minimum_buffer.size);
+ 
+ 
+ 	dprintk(ctx->dev,
+-		"Setting format for type %d, wxh: %dx%d, fmt: %d, size %u\n",
++		"Setting format for type %d, wxh: %dx%d, fmt: %08x, size %u\n",
+ 		f->type, q_data->width, q_data->height, q_data->fmt->fourcc,
+ 		q_data->sizeimage);
+ 
+@@ -737,6 +796,19 @@ static int vidioc_s_fmt_vid_out(struct file *file, void *priv,
+ 	return ret;
+ }
+ 
++static int vidioc_subscribe_evt(struct v4l2_fh *fh,
++				const struct v4l2_event_subscription *sub)
++{
++	switch (sub->type) {
++	case V4L2_EVENT_EOS:
++		return v4l2_event_subscribe(fh, sub, 2, NULL);
++	case V4L2_EVENT_SOURCE_CHANGE:
++		return v4l2_src_change_event_subscribe(fh, sub);
++	default:
++		return v4l2_ctrl_subscribe_event(fh, sub);
++	}
++}
++
+ static int bcm2835_codec_s_ctrl(struct v4l2_ctrl *ctrl)
+ {
+ 	struct bcm2835_codec_ctx *ctx =
+@@ -837,7 +909,7 @@ static const struct v4l2_ioctl_ops bcm2835_codec_ioctl_ops = {
+ 	.vidioc_streamon	= v4l2_m2m_ioctl_streamon,
+ 	.vidioc_streamoff	= v4l2_m2m_ioctl_streamoff,
+ 
+-	.vidioc_subscribe_event = v4l2_ctrl_subscribe_event,
++	.vidioc_subscribe_event = vidioc_subscribe_evt,
+ 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
+ };
+ 
+@@ -872,9 +944,6 @@ static int bcm2835_codec_queue_setup(struct vb2_queue *vq,
+ 		*nbuffers = port->minimum_buffer.num;
+ 	port->current_buffer.num = *nbuffers;
+ 
+-
+-	dprintk(ctx->dev, "get %d buffer(s) of size %d each.\n", *nbuffers, size);
+-
+ 	return 0;
+ }
+ 
+@@ -889,7 +958,6 @@ static int bcm2835_codec_buf_init(struct vb2_buffer *vb)
+ 		 __func__, ctx, vb);
+ 	buf->mmal.buffer = vb2_plane_vaddr(&buf->m2m.vb.vb2_buf, 0);
+ 	buf->mmal.buffer_size = vb2_plane_size(&buf->m2m.vb.vb2_buf, 0);
+-	buf->mmal.vb2 = &buf->m2m.vb;
+ 
+ 	mmal_vchi_buffer_init(ctx->dev->instance, &buf->mmal);
+ 
+@@ -1033,38 +1101,70 @@ static void bcm2835_codec_stop_streaming(struct vb2_queue *q)
+ {
+ 	struct bcm2835_codec_ctx *ctx = vb2_get_drv_priv(q);
+ 	struct bcm2835_codec_dev *dev = ctx->dev;
++	struct vchiq_mmal_port *port;
+ 	struct vb2_v4l2_buffer *vbuf;
+-	int ret;
++	struct vb2_v4l2_buffer *vb2;
++	struct v4l2_m2m_buffer *m2m;
++	struct m2m_mmal_buffer *buf;
++	int ret, i;
+ 
+ 	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: type: %d - return buffers\n",
+ 		 __func__, q->type);
++
++	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT)
++		port = &ctx->component->input[0];
++	else
++		port = &ctx->component->output[0];
++
++	init_completion(&ctx->frame_cmplt);
++
++	/* Clear out all buffers held by m2m framework */
+ 	for (;;) {
+ 		if (V4L2_TYPE_IS_OUTPUT(q->type))
+ 			vbuf = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
+ 		else
+ 			vbuf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
+ 		if (vbuf == NULL)
+-			return;
++			break;
+ 		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: return buffer %p\n",
+ 			 __func__, vbuf);
+ 
+ 		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
+ 	}
+ 
+-	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
+-		ret = vchiq_mmal_port_disable(dev->instance,
+-					     &ctx->component->input[0]);
+-		if (ret)
+-			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling i/p port, ret %d\n",
+-				 __func__, ret);
+-	} else {
+-		ret = vchiq_mmal_port_disable(dev->instance,
+-					     &ctx->component->output[0]);
+-		if (ret)
+-			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
+-				 __func__, ret);
++	/* Disable MMAL port - this will flush buffers back */
++	ret = vchiq_mmal_port_disable(dev->instance,
++				      &ctx->component->output[0]);
++	if (ret)
++		v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
++			 __func__, ret);
++
++	while (atomic_read(&port->buffers_with_vpu)) {
++		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Waiting for buffers to be returned - %d outstanding\n",
++			 __func__, atomic_read(&port->buffers_with_vpu));
++		ret = wait_for_completion_timeout(&ctx->frame_cmplt, HZ);
++		if (ret <= 0) {
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Timeout waiting for buffers to be returned - %d outstanding\n",
++				 __func__, atomic_read(&port->buffers_with_vpu));
++			break;
++		}
++	}
++
++	/* I can't believe I'm having to release the VCSM handle here, but
++	 * otherwise REQBUFS(0) aborts because someone is using the dmabuf
++	 * before giving me a chance to do anything about it.
++	 */
++	for (i = 0; i < q->num_buffers; i++) {
++		vb2 = to_vb2_v4l2_buffer(q->bufs[i]);
++		m2m = container_of(vb2, struct v4l2_m2m_buffer, vb);
++		buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
++
++		mmal_vchi_buffer_cleanup(&buf->mmal);
++		if (buf->mmal.dma_buf)
++			dma_buf_put(buf->mmal.dma_buf);
+ 	}
+ 
++	/* If both ports disabled, then disable the component */
+ 	if (!ctx->component->input[0].enabled &&
+ 	    !ctx->component->output[0].enabled) {
+ 		ret = vchiq_mmal_component_disable(dev->instance,
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-common.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-common.h
+index cf22c133e857..3d60796b4977 100644
+--- a/drivers/staging/vc04_services/bcm2835-codec/mmal-common.h
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-common.h
+@@ -57,8 +57,9 @@ struct mmal_buffer {
+ 	u32 vc_handle;		/* VC handle to that dmabuf */
+ #endif
+ 
+-	struct vb2_v4l2_buffer *vb2;
++//	struct vb2_v4l2_buffer *vb2;
+ 
++	u32 cmd;		/* MMAL command. 0=data. */
+ 	unsigned long length;
+ 	u32 mmal_flags;
+ 	s64 dts;
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-msg.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg.h
+index 3fddf1dcaace..6a1c49ce3ca0 100644
+--- a/drivers/staging/vc04_services/bcm2835-codec/mmal-msg.h
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg.h
+@@ -350,6 +350,34 @@ struct mmal_msg_port_parameter_get_reply {
+ /* event messages */
+ #define MMAL_WORKER_EVENT_SPACE 256
+ 
++/* Four CC's for events */
++#define MMAL_FOURCC(a, b, c, d) ((a) | (b << 8) | (c << 16) | (d << 24))
++
++#define MMAL_EVENT_ERROR		MMAL_FOURCC('E', 'R', 'R', 'O')
++#define MMAL_EVENT_EOS			MMAL_FOURCC('E', 'E', 'O', 'S')
++#define MMAL_EVENT_FORMAT_CHANGED 	MMAL_FOURCC('E', 'F', 'C', 'H')
++#define MMAL_EVENT_PARAMETER_CHANGED	MMAL_FOURCC('E', 'P', 'C', 'H')
++
++/* Structs for each of the event message payloads */
++struct mmal_msg_event_eos {
++	u32 port_type;	/**< Type of port that received the end of stream */
++	u32 port_index;	/**< Index of port that received the end of stream */
++};
++
++/** Format changed event data. */
++struct mmal_msg_event_format_changed {
++	u32 buffer_size_min;		/* Minimum size of buffers the port requires */
++	u32 buffer_num_min;		/* Minimum number of buffers the port requires */
++	u32 buffer_size_recommended;	/* Size of buffers the port recommends for optimal performance.
++					 * A value of zero means no special recommendation. */
++	u32 buffer_num_recommended;	/* Number of buffers the port recommends for optimal
++					 * performance. A value of zero means no special recommendation. */
++	u32 es_ptr;
++	struct mmal_es_format format;
++	union mmal_es_specific_format es;
++	u8 extradata[MMAL_FORMAT_EXTRADATA_MAX_SIZE];
++};
++
+ struct mmal_msg_event_to_host {
+ 	u32 client_component;	/* component context */
+ 
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.c b/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.c
+index 92f70e53c5ae..f57fbb4533f1 100644
+--- a/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.c
+@@ -114,6 +114,9 @@ static const char *const port_action_type_names[] = {
+ #define DBG_DUMP_MSG(MSG, MSG_LEN, TITLE)
+ #endif
+ 
++//#undef pr_debug
++//#define pr_debug pr_err
++
+ struct vchiq_mmal_instance;
+ 
+ /* normal message context */
+@@ -140,6 +143,8 @@ struct mmal_msg_context {
+ 			/* Presentation and Decode timestamps */
+ 			s64 pts;
+ 			s64 dts;
++			/* MMAL buffer command flag */
++			u32 cmd;
+ 
+ 			int status;	/* context status */
+ 
+@@ -295,18 +300,6 @@ release_msg_context(struct mmal_msg_context *msg_context)
+ 	kfree(msg_context);
+ }
+ 
+-/* deals with receipt of event to host message */
+-static void event_to_host_cb(struct vchiq_mmal_instance *instance,
+-			     struct mmal_msg *msg, u32 msg_len)
+-{
+-	pr_debug("unhandled event\n");
+-	pr_debug("component:%u port type:%d num:%d cmd:0x%x length:%d\n",
+-		 msg->u.event_to_host.client_component,
+-		 msg->u.event_to_host.port_type,
+-		 msg->u.event_to_host.port_num,
+-		 msg->u.event_to_host.cmd, msg->u.event_to_host.length);
+-}
+-
+ /* workqueue scheduled callback
+  *
+  * we do this because it is important we do not call any other vchiq
+@@ -318,19 +311,30 @@ static void buffer_work_cb(struct work_struct *work)
+ 		container_of(work, struct mmal_msg_context, u.bulk.work);
+ 	struct mmal_buffer *buffer = msg_context->u.bulk.buffer;
+ 
+-	pr_err("%s: ctx: %p, buf %p, idx %u\n", __func__, msg_context,
+-	       msg_context->u.bulk.buffer,
+-			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++	pr_err("%s: ctx: %p, buf %p\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer);
++	if (!msg_context->u.bulk.buffer) {
++		pr_err("%s: ctx: %p, No mmal buffer to pass details in\n",
++		       __func__, msg_context);
++		return;
++	}
+ 
+ 	buffer->length = msg_context->u.bulk.buffer_used;
+ 	buffer->mmal_flags = msg_context->u.bulk.mmal_flags;
+ 	buffer->dts = msg_context->u.bulk.dts;
+ 	buffer->pts = msg_context->u.bulk.pts;
++	buffer->cmd = msg_context->u.bulk.cmd;
++
++	if (!buffer->cmd)
++		atomic_dec(&msg_context->u.bulk.port->buffers_with_vpu);
+ 
+ 	msg_context->u.bulk.port->buffer_cb(msg_context->u.bulk.instance,
+ 					    msg_context->u.bulk.port,
+ 					    msg_context->u.bulk.status,
+ 					    msg_context->u.bulk.buffer);
++
++	if (buffer->cmd)
++		mutex_unlock(&msg_context->u.bulk.port->event_context_mutex);
+ }
+ 
+ /* workqueue scheduled callback to handle receiving buffers
+@@ -348,9 +352,8 @@ static void buffer_to_host_work_cb(struct work_struct *work)
+ 	struct vchiq_mmal_instance *instance = msg_context->instance;
+ 	int ret;
+ 
+-	pr_err("%s: ctx: %p, buf %p, idx %u\n", __func__, msg_context,
+-	       msg_context->u.bulk.buffer,
+-			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++	pr_err("%s: ctx: %p, buf %p\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer);
+ 
+ 	/* queue the bulk submission */
+ 	vchi_service_use(instance->handle);
+@@ -370,9 +373,8 @@ static void buffer_to_host_work_cb(struct work_struct *work)
+ 		pr_err("%s: ctx: %p, vchi_bulk_queue_receive failed %d\n",
+ 		       __func__, msg_context, ret);
+ 
+-	pr_err("%s: exit ctx: %p, buf %p, idx %u\n", __func__, msg_context,
+-	       msg_context->u.bulk.buffer,
+-			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++	pr_err("%s: exit ctx: %p, buf %p\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer);
+ }
+ 
+ /* enqueue a bulk receive for a given message context */
+@@ -417,12 +419,12 @@ static int bulk_receive(struct vchiq_mmal_instance *instance,
+ 	    msg->u.buffer_from_host.buffer_header.flags;
+ 	msg_context->u.bulk.dts = msg->u.buffer_from_host.buffer_header.dts;
+ 	msg_context->u.bulk.pts = msg->u.buffer_from_host.buffer_header.pts;
++	msg_context->u.bulk.cmd = msg->u.buffer_from_host.buffer_header.cmd;
+ 
+ 	schedule_work(&msg_context->u.bulk.buffer_to_host_work);
+ 
+-	pr_err("%s: exit ctx: %p, buf %p, idx %u\n", __func__, msg_context,
+-	       msg_context->u.bulk.buffer,
+-			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++	pr_err("%s: exit ctx: %p, buf %p\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer);
+ 
+ 	return 0;
+ }
+@@ -468,9 +470,8 @@ static int inline_receive(struct vchiq_mmal_instance *instance,
+ 	msg_context->u.bulk.buffer_used =
+ 	    msg->u.buffer_from_host.payload_in_message;
+ 
+-	pr_err("%s: exit ctx: %p, buf %p, idx %u\n", __func__, msg_context,
+-	       msg_context->u.bulk.buffer,
+-			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++	pr_err("%s: exit ctx: %p, buf %p\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer);
+ 	return 0;
+ }
+ 
+@@ -486,8 +487,7 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
+ 	if (!port->enabled)
+ 		return -EINVAL;
+ 
+-	pr_debug("instance:%p buffer:%p, idx: %u\n", instance->handle, buf,
+-		 buf->vb2->vb2_buf.index);
++	pr_debug("instance:%p buffer:%p\n", instance->handle, buf);
+ 
+ 	/* get context */
+ 	if (!buf->msg_context) {
+@@ -508,6 +508,8 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
+ 	INIT_WORK(&msg_context->u.bulk.buffer_to_host_work,
+ 		  buffer_to_host_work_cb);
+ 
++	atomic_inc(&port->buffers_with_vpu);
++
+ 	/* prep the buffer from host message */
+ 	memset(&m, 0xbc, sizeof(m));	/* just to make debug clearer */
+ 
+@@ -570,6 +572,103 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
+ 	return ret;
+ }
+ 
++/* deals with receipt of event to host message */
++static void event_to_host_cb(struct vchiq_mmal_instance *instance,
++			     struct mmal_msg *msg, u32 msg_len)
++{
++	/* FIXME: Not going to work on 64 bit */
++	struct vchiq_mmal_component *component =
++		(struct vchiq_mmal_component *)msg->u.event_to_host.client_component;
++	struct vchiq_mmal_port *port = NULL;
++	struct mmal_msg_context *msg_context;
++	u32 port_num = msg->u.event_to_host.port_num;
++
++	if (msg->u.buffer_from_host.drvbuf.magic == MMAL_MAGIC) {
++		pr_err("%s: MMAL_MSG_TYPE_BUFFER_TO_HOST with bad magic\n",
++		       __func__);
++		return;
++	}
++
++	switch (msg->u.event_to_host.port_type) {
++	case MMAL_PORT_TYPE_CONTROL:
++		if (port_num) {
++			pr_err("%s: port_num of %u >= number of ports 1",
++			       __func__, port_num);
++			return;
++		}
++		port = &component->control;
++		break;
++	case MMAL_PORT_TYPE_INPUT:
++		if (port_num >= component->inputs) {
++			pr_err("%s: port_num of %u >= number of ports %u",
++			       __func__, port_num,
++			       port_num >= component->inputs);
++			return;
++		}
++		port = &component->input[port_num];
++		break;
++	case MMAL_PORT_TYPE_OUTPUT:
++		if (port_num >= component->outputs) {
++			pr_err("%s: port_num of %u >= number of ports %u",
++			       __func__, port_num,
++			       port_num >= component->outputs);
++			return;
++		}
++		port = &component->output[port_num];
++		break;
++	case MMAL_PORT_TYPE_CLOCK:
++		if (port_num >= component->clocks) {
++			pr_err("%s: port_num of %u >= number of ports %u",
++			       __func__, port_num,
++			       port_num >= component->clocks);
++			return;
++		}
++		port = &component->clock[port_num];
++		break;
++	default:
++		break;
++	}
++
++	if (!mutex_trylock(&port->event_context_mutex)) {
++		pr_err("dropping event 0x%x\n", msg->u.event_to_host.cmd);
++		return;
++	}
++	msg_context = port->event_context;
++
++	if (msg->h.status != MMAL_MSG_STATUS_SUCCESS) {
++		/* message reception had an error */
++		//pr_warn
++		pr_err("%s: error %d in reply\n", __func__, msg->h.status);
++
++		msg_context->u.bulk.status = msg->h.status;
++	} else if (msg->u.event_to_host.length > MMAL_WORKER_EVENT_SPACE) {
++		/* data is not in message, queue a bulk receive */
++		pr_err("%s: payload not in message - bulk receive??! NOT SUPPORTED\n",
++		       __func__);
++		msg_context->u.bulk.status = -1;
++	} else {
++		memcpy(msg_context->u.bulk.buffer->buffer,
++		       msg->u.event_to_host.data,
++		       msg->u.event_to_host.length);
++
++		msg_context->u.bulk.buffer_used =
++		    msg->u.event_to_host.length;
++
++		msg_context->u.bulk.mmal_flags = 0;
++		msg_context->u.bulk.dts = MMAL_TIME_UNKNOWN;
++		msg_context->u.bulk.pts = MMAL_TIME_UNKNOWN;
++		msg_context->u.bulk.cmd = msg->u.event_to_host.cmd;
++
++		pr_err("event component:%u port type:%d num:%d cmd:0x%x length:%d\n",
++		       msg->u.event_to_host.client_component,
++		       msg->u.event_to_host.port_type,
++		       msg->u.event_to_host.port_num,
++		       msg->u.event_to_host.cmd, msg->u.event_to_host.length);
++	}
++
++	schedule_work(&msg_context->u.bulk.work);
++}
++
+ /* deals with receipt of buffer to host message */
+ static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
+ 			      struct mmal_msg *msg, u32 msg_len)
+@@ -606,7 +705,6 @@ static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
+ 		 * Zero copy buffer, so nothing to do.
+ 		 * Copy buffer info and make callback.
+ 		 */
+-		pr_err("zero copy buffer\n");
+ 		msg_context->u.bulk.buffer_used =
+ 				msg->u.buffer_from_host.buffer_header.length;
+ 		msg_context->u.bulk.mmal_flags =
+@@ -615,10 +713,11 @@ static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
+ 				msg->u.buffer_from_host.buffer_header.dts;
+ 		msg_context->u.bulk.pts =
+ 				msg->u.buffer_from_host.buffer_header.pts;
++		msg_context->u.bulk.cmd =
++				msg->u.buffer_from_host.buffer_header.cmd;
+ 
+ 	} else if (msg->u.buffer_from_host.buffer_header.length == 0) {
+ 		/* empty buffer */
+-		pr_err("empty buffer\n");
+ 		if (msg->u.buffer_from_host.buffer_header.flags &
+ 		    MMAL_BUFFER_HEADER_FLAG_EOS) {
+ 			msg_context->u.bulk.status =
+@@ -634,7 +733,6 @@ static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
+ 		}
+ 	} else if (msg->u.buffer_from_host.payload_in_message == 0) {
+ 		/* data is not in message, queue a bulk receive */
+-		pr_err("payload in message\n");
+ 		msg_context->u.bulk.status =
+ 		    bulk_receive(instance, msg, msg_context);
+ 		if (msg_context->u.bulk.status == 0)
+@@ -649,7 +747,6 @@ static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
+ 	} else if (msg->u.buffer_from_host.payload_in_message <=
+ 		   MMAL_VC_SHORT_DATA) {
+ 		/* data payload within message */
+-		pr_err("inline receive\n");
+ 		msg_context->u.bulk.status = inline_receive(instance, msg,
+ 							    msg_context);
+ 	} else {
+@@ -1470,6 +1567,7 @@ static int port_disable(struct vchiq_mmal_instance *instance,
+ 				mmalbuf->mmal_flags = 0;
+ 				mmalbuf->dts = MMAL_TIME_UNKNOWN;
+ 				mmalbuf->pts = MMAL_TIME_UNKNOWN;
++				mmalbuf->cmd = 0;
+ 				port->buffer_cb(instance,
+ 						port, 0, mmalbuf);
+ 			}
+@@ -1546,6 +1644,7 @@ int vchiq_mmal_port_set_format(struct vchiq_mmal_instance *instance,
+ 
+ 	/* read what has actually been set */
+ 	ret = port_info_get(instance, port);
++	dump_port_info(port);
+ 
+ release_unlock:
+ 	mutex_unlock(&instance->vchiq_mutex);
+@@ -1786,16 +1885,12 @@ int mmal_vchi_buffer_init(struct vchiq_mmal_instance *instance,
+ 
+ int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf)
+ {
+-	struct mmal_msg_context *msg_context =
+-			(struct mmal_msg_context *)buf->msg_context;
+-
+-	if (msg_context)
+-		release_msg_context(msg_context);
+-	buf->msg_context = NULL;
++	if (buf->msg_context) {
++		release_msg_context(buf->msg_context);
++		buf->msg_context = NULL;
++	}
+ 
+ #if defined(CONFIG_BCM_VC_SM_CMA)
+-	pr_err("%s: vcsm_handle %d\n",
+-	       __func__, buf->vcsm_handle);
+ 	if (buf->vcsm_handle) {
+ 		int ret;
+ 
+@@ -1804,11 +1899,49 @@ int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf)
+ 		ret = vc_sm_cma_free(buf->vcsm_handle);
+ 		if (ret)
+ 			pr_err("%s: vcsm_free failed, ret %d\n", __func__, ret);
++		buf->vcsm_handle = 0;
+ 	}
+ #endif
+ 	return 0;
+ }
+ 
++static void init_event_context(struct vchiq_mmal_instance *instance,
++			       struct vchiq_mmal_port *port)
++{
++	struct mmal_msg_context *ctx = get_msg_context(instance);
++
++	mutex_init(&port->event_context_mutex);
++
++	port->event_context = ctx;
++	ctx->u.bulk.instance = instance;
++	ctx->u.bulk.port = port;
++	ctx->u.bulk.buffer =
++		kzalloc(sizeof(*ctx->u.bulk.buffer), GFP_KERNEL);
++	if (!ctx->u.bulk.buffer)
++		goto release_msg_context;
++	ctx->u.bulk.buffer->buffer = kzalloc(MMAL_WORKER_EVENT_SPACE,
++					     GFP_KERNEL);
++	if (!ctx->u.bulk.buffer->buffer)
++		goto release_buffer;
++
++	INIT_WORK(&ctx->u.bulk.work, buffer_work_cb);
++	return;
++
++release_buffer:
++	kfree(ctx->u.bulk.buffer);
++release_msg_context:
++	release_msg_context(ctx);
++}
++
++static void free_event_context(struct vchiq_mmal_port *port)
++{
++	struct mmal_msg_context *ctx = port->event_context;
++
++	kfree(ctx->u.bulk.buffer->buffer);
++	kfree(ctx->u.bulk.buffer);
++	release_msg_context(ctx);
++}
++
+ /* Initialise a mmal component and its ports
+  *
+  */
+@@ -1849,6 +1982,7 @@ int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
+ 	ret = port_info_get(instance, &component->control);
+ 	if (ret < 0)
+ 		goto release_component;
++	init_event_context(instance, &component->control);
+ 
+ 	for (idx = 0; idx < component->inputs; idx++) {
+ 		component->input[idx].type = MMAL_PORT_TYPE_INPUT;
+@@ -1859,6 +1993,7 @@ int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
+ 		ret = port_info_get(instance, &component->input[idx]);
+ 		if (ret < 0)
+ 			goto release_component;
++		init_event_context(instance, &component->input[idx]);
+ 	}
+ 
+ 	for (idx = 0; idx < component->outputs; idx++) {
+@@ -1870,6 +2005,7 @@ int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
+ 		ret = port_info_get(instance, &component->output[idx]);
+ 		if (ret < 0)
+ 			goto release_component;
++		init_event_context(instance, &component->output[idx]);
+ 	}
+ 
+ 	for (idx = 0; idx < component->clocks; idx++) {
+@@ -1881,6 +2017,7 @@ int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
+ 		ret = port_info_get(instance, &component->clock[idx]);
+ 		if (ret < 0)
+ 			goto release_component;
++		init_event_context(instance, &component->clock[idx]);
+ 	}
+ 
+ 	*component_out = component;
+@@ -1905,7 +2042,7 @@ int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
+ int vchiq_mmal_component_finalise(struct vchiq_mmal_instance *instance,
+ 				  struct vchiq_mmal_component *component)
+ {
+-	int ret;
++	int ret, idx;
+ 
+ 	if (mutex_lock_interruptible(&instance->vchiq_mutex))
+ 		return -EINTR;
+@@ -1915,6 +2052,13 @@ int vchiq_mmal_component_finalise(struct vchiq_mmal_instance *instance,
+ 
+ 	ret = destroy_component(instance, component);
+ 
++	for (idx = 0; idx < component->inputs; idx++)
++		free_event_context(&component->input[idx]);
++	for (idx = 0; idx < component->outputs; idx++)
++		free_event_context(&component->output[idx]);
++	for (idx = 0; idx < component->clocks; idx++)
++		free_event_context(&component->clock[idx]);
++
+ 	component->in_use = false;
+ 
+ 	mutex_unlock(&instance->vchiq_mutex);
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.h
+index 84aa8ffc1ffc..372ed65f60c7 100644
+--- a/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.h
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.h
+@@ -73,16 +73,24 @@ struct vchiq_mmal_port {
+ 	/* elementary stream format */
+ 	union mmal_es_specific_format es;
+ 
+-	/* data buffers to fill */
++	/* data buffers */
+ 	struct list_head buffers;
+ 	/* lock to serialise adding and removing buffers from list */
+ 	spinlock_t slock;
++
++	/* Count of buffers the VPU has yet to return */
++	atomic_t buffers_with_vpu;
++
+ 	/* callback on buffer completion */
+ 	vchiq_mmal_buffer_cb buffer_cb;
+ 	/* callback context */
+ 	void *cb_ctx;
+ 
+ 	bool zero_copy;
++
++	/* ensure serialised use of the one event context structure */
++	struct mutex event_context_mutex;
++	struct mmal_msg_context *event_context;
+ };
+ 
+ struct vchiq_mmal_component {
+-- 
+2.17.0
+

@@ -1,0 +1,57 @@
+From 0146f958fab4be988b478c15727f9e13d4c80a21 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 3 May 2018 15:14:06 +0100
+Subject: [PATCH 67/80] bcm2835-camera: Switch to using vb2_core_expbuf_dmabuf
+
+Saves faffing with being given a file handle that we then
+immediately close.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../bcm2835-camera/bcm2835-camera.c           | 23 ++++---------------
+ 1 file changed, 4 insertions(+), 19 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+index daa24d7c382d..a827e3584374 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+@@ -319,32 +319,17 @@ static int buffer_prepare(struct vb2_buffer *vb)
+ 
+ #if defined(CONFIG_BCM_VC_SM_CMA)
+ 	/*
+-	 * Two niggles:
+-	 * 1 - We want to do this at init, but vb2_core_expbuf checks that the
++	 * We want to do this at init, but vb2_core_expbuf checks that the
+ 	 * index < q->num_buffers, and q->num_buffers only gets updated once
+ 	 * all the buffers are allocated.
+-	 *
+-	 * 2 - videobuf2 only exposes dmabufs as an fd via vb2_core_expbuf.
+-	 * Ideally we'd like the struct dma_buf directly, but can't get hold of
+-	 * it, so have to accept the fd and work with it.
+ 	 */
+ 	if (!buf->mmal.dma_buf) {
+-		int fd;
+-
+-		ret = vb2_core_expbuf(vb->vb2_queue, &fd,
+-				      vb->vb2_queue->type, vb->index, 0,
+-				      O_CLOEXEC);
++		ret = vb2_core_expbuf_dmabuf(vb->vb2_queue,
++					     vb->vb2_queue->type, vb->index, 0,
++					     O_CLOEXEC, &buf->mmal.dma_buf);
+ 		if (ret)
+ 			v4l2_err(&dev->v4l2_dev, "%s: Failed to expbuf idx %d, ret %d\n",
+ 				 __func__, vb->index, ret);
+-		buf->mmal.dma_buf = dma_buf_get(fd);
+-		v4l2_err(&dev->v4l2_dev, "%s: Given dma_buf fd %d, %p\n",
+-			 __func__, fd, buf->mmal.dma_buf);
+-		/*
+-		 * Release the fd (and the associated refcount) as we now have
+-		 * a ref to the dma_buf
+-		 */
+-		sys_close(fd);
+ 	}
+ #else
+ 	ret = 0;
+-- 
+2.17.0
+

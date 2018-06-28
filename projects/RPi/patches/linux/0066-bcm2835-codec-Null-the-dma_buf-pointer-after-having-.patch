@@ -1,0 +1,45 @@
+From 60788526b30cf6962d658cff4cade54b8dc10543 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 3 May 2018 15:10:29 +0100
+Subject: [PATCH 66/80] bcm2835-codec: Null the dma_buf pointer after having
+ put it
+
+We were putting the dma_buf multiple times, which would often
+blow up.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c      | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+index 7e20ba6184d9..04a81bb6ac67 100644
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -1470,8 +1470,10 @@ static void bcm2835_codec_buffer_cleanup(struct vb2_buffer *vb)
+ 	mmal_vchi_buffer_cleanup(&buf->mmal);
+ 
+ #if defined(CONFIG_BCM_VC_SM_CMA)
+-	if (buf->mmal.dma_buf)
++	if (buf->mmal.dma_buf) {
+ 		dma_buf_put(buf->mmal.dma_buf);
++		buf->mmal.dma_buf = NULL;
++	}
+ #endif
+ }
+ 
+@@ -1587,8 +1589,10 @@ static void bcm2835_codec_stop_streaming(struct vb2_queue *q)
+ 		buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
+ 
+ 		mmal_vchi_buffer_cleanup(&buf->mmal);
+-		if (buf->mmal.dma_buf)
++		if (buf->mmal.dma_buf) {
+ 			dma_buf_put(buf->mmal.dma_buf);
++			buf->mmal.dma_buf = NULL;
++		}
+ 	}
+ 
+ 	/* If both ports disabled, then disable the component */
+-- 
+2.17.0
+

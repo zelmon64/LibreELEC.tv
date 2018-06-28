@@ -1,0 +1,30 @@
+From 6bcbd2054dac07920a85636e71ed6736d63c27d8 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 21 Feb 2018 14:04:49 +0000
+Subject: [PATCH 36/80] staging: bcm2835-camera: Use octal permissions.
+
+Fix up checkpatch error
+Symbolic permissions 'S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH'
+are not preferred. Consider using octal permissions '0644'
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+index 0f85f5247236..941469a7af89 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+@@ -69,7 +69,7 @@ module_param(max_video_height, int, 0644);
+ MODULE_PARM_DESC(max_video_height, "Threshold for video mode");
+ 
+ static int always_remove_padding;
+-module_param(always_remove_padding, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
++module_param(always_remove_padding, int, 0644);
+ MODULE_PARM_DESC(always_remove_padding,
+ 	"Always remove all padding from the image (for apps that ignore bytesperline)");
+ 
+-- 
+2.17.0
+

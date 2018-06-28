@@ -1,0 +1,28 @@
+From 21889ae7b502eac8773ba2e5e2fd705845649106 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 21 Feb 2018 14:03:40 +0000
+Subject: [PATCH 35/80] staging: bcm2835-camera: do not initialise statics to 0
+
+Fix up checkpatch error "do not initialise statics to 0"
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+index 4c9a1b3e88dc..0f85f5247236 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+@@ -68,7 +68,7 @@ MODULE_PARM_DESC(max_video_width, "Threshold for video mode");
+ module_param(max_video_height, int, 0644);
+ MODULE_PARM_DESC(max_video_height, "Threshold for video mode");
+ 
+-static int always_remove_padding = 0;
++static int always_remove_padding;
+ module_param(always_remove_padding, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+ MODULE_PARM_DESC(always_remove_padding,
+ 	"Always remove all padding from the image (for apps that ignore bytesperline)");
+-- 
+2.17.0
+

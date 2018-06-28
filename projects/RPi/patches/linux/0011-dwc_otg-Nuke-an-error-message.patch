@@ -1,0 +1,30 @@
+From c7122df47de5995c6ec457f8003630a3c36185d0 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Mon, 22 Jan 2018 17:26:30 +0000
+Subject: [PATCH 11/80] dwc_otg: Nuke an error message
+
+It was spamming dmesg
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/usb/host/dwc_otg/dwc_otg_cil_intr.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/usb/host/dwc_otg/dwc_otg_cil_intr.c b/drivers/usb/host/dwc_otg/dwc_otg_cil_intr.c
+index 9fb7229f43ae..82f74a22ed7d 100644
+--- a/drivers/usb/host/dwc_otg/dwc_otg_cil_intr.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_cil_intr.c
+@@ -64,8 +64,8 @@ inline const char *op_state_str(dwc_otg_core_if_t * core_if)
+ int32_t dwc_otg_handle_mode_mismatch_intr(dwc_otg_core_if_t * core_if)
+ {
+ 	gintsts_data_t gintsts;
+-	DWC_WARN("Mode Mismatch Interrupt: currently in %s mode\n",
+-		 dwc_otg_mode(core_if) ? "Host" : "Device");
++	//DWC_WARN("Mode Mismatch Interrupt: currently in %s mode\n",
++	//	 dwc_otg_mode(core_if) ? "Host" : "Device");
+ 
+ 	/* Clear interrupt */
+ 	gintsts.d32 = 0;
+-- 
+2.17.0
+

@@ -1,0 +1,96 @@
+From 1f0df720dffb45b6d30a2304248c09679e6a21bf Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Mon, 12 Feb 2018 17:33:43 +0000
+Subject: [PATCH 15/80] staging: bcm2835-camera: Switch to using dma-contig
+ allocator
+
+Switch from using the vmalloc vb2 allocator to the dma-contig
+one.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/staging/vc04_services/bcm2835-camera/Kconfig   |  2 +-
+ .../vc04_services/bcm2835-camera/bcm2835-camera.c      | 10 ++--------
+ .../staging/vc04_services/bcm2835-camera/mmal-common.h |  2 ++
+ .../staging/vc04_services/bcm2835-camera/mmal-vchiq.c  |  1 -
+ 4 files changed, 5 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/Kconfig b/drivers/staging/vc04_services/bcm2835-camera/Kconfig
+index b8b01aa4e426..1fda52a09d40 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/Kconfig
++++ b/drivers/staging/vc04_services/bcm2835-camera/Kconfig
+@@ -3,7 +3,7 @@ config VIDEO_BCM2835
+ 	depends on MEDIA_SUPPORT
+ 	depends on VIDEO_V4L2 && (ARCH_BCM2835 || COMPILE_TEST)
+ 	select BCM2835_VCHIQ
+-	select VIDEOBUF2_VMALLOC
++	select VIDEOBUF2_DMA_CONTIG
+ 	select BTREE
+ 	help
+ 	  Say Y here to enable camera host interface devices for
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+index 00bcd2a4dbe3..34163cc366a0 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+@@ -18,7 +18,6 @@
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+-#include <media/videobuf2-vmalloc.h>
+ #include <media/videobuf2-dma-contig.h>
+ #include <media/v4l2-device.h>
+ #include <media/v4l2-ioctl.h>
+@@ -275,11 +274,6 @@ static int queue_setup(struct vb2_queue *vq,
+ 
+ 	sizes[0] = size;
+ 
+-	/*
+-	 * videobuf2-vmalloc allocator is context-less so no need to set
+-	 * alloc_ctxs array.
+-	 */
+-
+ 	v4l2_dbg(1, bcm2835_v4l2_debug, &dev->v4l2_dev, "%s: dev:%p\n",
+ 		 __func__, dev);
+ 
+@@ -1927,11 +1921,11 @@ static int bm2835_mmal_probe(struct platform_device *pdev)
+ 		q = &dev->capture.vb_vidq;
+ 		memset(q, 0, sizeof(*q));
+ 		q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+-		q->io_modes = VB2_MMAP | VB2_USERPTR | VB2_READ;
++		q->io_modes = VB2_MMAP | VB2_DMABUF | VB2_USERPTR | VB2_READ;
+ 		q->drv_priv = dev;
+ 		q->buf_struct_size = sizeof(struct mmal_buffer);
+ 		q->ops = &bm2835_mmal_video_qops;
+-		q->mem_ops = &vb2_vmalloc_memops;
++		q->mem_ops = &vb2_dma_contig_memops;
+ 		q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+ 		q->dev	= &pdev->dev;
+ 		ret = vb2_queue_init(q);
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-common.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-common.h
+index 7790675e167d..a94ba439ca61 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-common.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-common.h
+@@ -16,6 +16,8 @@
+  *
+  */
+ 
++#include <media/videobuf2-v4l2.h>
++
+ #define MMAL_FOURCC(a, b, c, d) ((a) | (b << 8) | (c << 16) | (d << 24))
+ #define MMAL_MAGIC MMAL_FOURCC('m', 'm', 'a', 'l')
+ 
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+index 4360db6d4392..4732b133eba1 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+@@ -26,7 +26,6 @@
+ #include <linux/vmalloc.h>
+ #include <linux/btree.h>
+ #include <asm/cacheflush.h>
+-#include <media/videobuf2-vmalloc.h>
+ 
+ #include "mmal-common.h"
+ #include "mmal-vchiq.h"
+-- 
+2.17.0
+

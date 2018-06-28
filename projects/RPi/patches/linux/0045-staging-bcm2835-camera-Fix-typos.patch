@@ -1,0 +1,42 @@
+From 520309f39ac4d160cdd307d93494c376284c7366 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 21 Feb 2018 15:58:38 +0000
+Subject: [PATCH 45/80] staging: bcm2835-camera: Fix typos.
+
+Fix two typos flagged up by checkpatch.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h | 2 +-
+ drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h    | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h
+index 31798430964a..c1d0d4bac23f 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-msg-port.h
+@@ -44,7 +44,7 @@ enum mmal_port_type {
+  *
+  * most elements are informational only, the pointer values for
+  * interogation messages are generally provided as additional
+- * strucures within the message. When used to set values only teh
++ * strucures within the message. When used to set values only the
+  * buffer_num, buffer_size and userdata parameters are writable.
+  */
+ struct mmal_port {
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
+index ad73277bee8c..e3f3c5b810c6 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
+@@ -121,7 +121,7 @@ int vchiq_mmal_component_disable(
+ /* enable a mmal port
+  *
+  * enables a port and if a buffer callback provided enque buffer
+- * headers as apropriate for the port.
++ * headers as appropriate for the port.
+  */
+ int vchiq_mmal_port_enable(
+ 		struct vchiq_mmal_instance *instance,
+-- 
+2.17.0
+

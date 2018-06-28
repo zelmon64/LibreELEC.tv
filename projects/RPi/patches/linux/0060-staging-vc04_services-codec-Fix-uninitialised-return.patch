@@ -1,0 +1,27 @@
+From 8c089fb5b5e56ac7666a30cd4e79d41e2b906318 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 24 Apr 2018 11:16:07 +0100
+Subject: [PATCH 60/80] staging: vc04_services: codec: Fix uninitialised return
+ value
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c    | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+index 8f3c094c6103..a94145857e7a 100644
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -1283,6 +1283,8 @@ static int bcm2835_codec_buf_prepare(struct vb2_buffer *vb)
+ 		 * a ref to the dma_buf
+ 		 */
+ 		sys_close(fd);
++	} else {
++		ret = 0;
+ 	}
+ #else
+ 	ret = 0;
+-- 
+2.17.0
+

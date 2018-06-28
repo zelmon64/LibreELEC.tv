@@ -1,0 +1,42 @@
+From f6b272b66aa80af9b9a09b01566f102ea86c1ac0 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 15 Feb 2018 16:11:45 +0000
+Subject: [PATCH 22/80] staging: bcm2835-camera: Add multiple include
+ protection
+
+mmal-parameters.h didn't have the normal
+ifndef _FOO_H
+define _FOO_H
+...
+endif
+protection to stop it being included multiple times.
+Add it.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../staging/vc04_services/bcm2835-camera/mmal-parameters.h   | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
+index e7300229842d..37fba8f62d4d 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
+@@ -21,6 +21,9 @@
+  * @{
+  */
+ 
++#ifndef __MMAL_PARAMETERS_H
++#define __MMAL_PARAMETERS_H
++
+ /** Common parameter ID group, used with many types of component. */
+ #define MMAL_PARAMETER_GROUP_COMMON            (0<<16)
+ /** Camera-specific parameter ID group. */
+@@ -685,3 +688,5 @@ struct mmal_parameter_camera_info_t {
+ 	struct mmal_parameter_camera_info_flash_t
+ 				flashes[MMAL_PARAMETER_CAMERA_INFO_MAX_FLASHES];
+ };
++
++#endif
+-- 
+2.17.0
+
