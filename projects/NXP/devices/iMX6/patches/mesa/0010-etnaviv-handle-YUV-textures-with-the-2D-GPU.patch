@@ -1,0 +1,136 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 23 May 2018 18:08:37 +0200
+Subject: [PATCH] etnaviv: handle YUV textures with the 2D GPU
+
+This allows color space conversion and tiling in a single step, as
+well as handling multi-planar formats like NV12, which are really
+useful when dealing with hardware video decoders.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/drivers/etnaviv/etnaviv_clear_blit.c | 2 +-
+ src/gallium/drivers/etnaviv/etnaviv_format.c     | 5 ++++-
+ src/gallium/drivers/etnaviv/etnaviv_resource.c   | 6 ++++++
+ src/gallium/drivers/etnaviv/etnaviv_rs.c         | 5 +++++
+ src/gallium/drivers/etnaviv/etnaviv_screen.c     | 5 ++++-
+ src/gallium/drivers/etnaviv/etnaviv_texture.c    | 7 +++++++
+ 6 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_clear_blit.c b/src/gallium/drivers/etnaviv/etnaviv_clear_blit.c
+index 45c30cbf5076..5214162d8798 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_clear_blit.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_clear_blit.c
+@@ -159,7 +159,7 @@ etna_copy_resource(struct pipe_context *pctx, struct pipe_resource *dst,
+    struct etna_resource *src_priv = etna_resource(src);
+    struct etna_resource *dst_priv = etna_resource(dst);
+ 
+-   assert(src->format == dst->format);
++   assert(src->format == dst->format || util_format_is_yuv(src->format));
+    assert(src->array_size == dst->array_size);
+    assert(last_level <= dst->last_level && last_level <= src->last_level);
+ 
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_format.c b/src/gallium/drivers/etnaviv/etnaviv_format.c
+index 29e81c4a8b04..0879ddd6a6c8 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_format.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_format.c
+@@ -282,8 +282,11 @@ static struct etna_format formats[PIPE_FORMAT_COUNT] = {
+    _T(ASTC_12x12_SRGB, ASTC_SRGB8_ALPHA8_12x12 | ASTC_FORMAT,          SWIZ(X, Y, Z, W), NONE, NONE),
+ 
+    /* YUV */
+-   _T(YUYV, YUY2, SWIZ(X, Y, Z, W), YUY2, NONE),
++   _T(YUYV, X8B8G8R8, SWIZ(X, Y, Z, W), NONE, NONE),
+    _T(UYVY, UYVY, SWIZ(X, Y, Z, W), NONE, NONE),
++
++   /* multi-planar YUV */
++   _T(NV12, X8B8G8R8, SWIZ(X, Y, Z, W), NONE, NONE),
+ };
+ 
+ uint32_t
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_resource.c b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+index da204eaec546..ecdaad0abb01 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_resource.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+@@ -540,6 +540,12 @@ etna_resource_from_handle(struct pipe_screen *pscreen,
+                                                                   level->padded_height);
+    level->size = level->layer_stride;
+ 
++   /* YUV resources are handled by the 2D GPU, so the below constraint checks
++    * are invalid.
++    */
++   if (util_format_is_yuv(tmpl->format))
++      return prsc;
++
+    /* The DDX must give us a BO which conforms to our padding size.
+     * The stride of the BO must be greater or equal to our padded
+     * stride. The size of the BO must accomodate the padded height. */
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_rs.c b/src/gallium/drivers/etnaviv/etnaviv_rs.c
+index fc4f65dbeee1..b52d39364608 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_rs.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_rs.c
+@@ -26,6 +26,7 @@
+ 
+ #include "etnaviv_rs.h"
+ 
++#include "etnaviv_2d.h"
+ #include "etnaviv_clear_blit.h"
+ #include "etnaviv_context.h"
+ #include "etnaviv_emit.h"
+@@ -774,6 +775,10 @@ etna_blit_rs(struct pipe_context *pctx, const struct pipe_blit_info *blit_info)
+       return;
+    }
+ 
++   if (util_format_is_yuv(blit_info->src.format) &&
++       etna_try_2d_blit(pctx, blit_info))
++      return;
++
+    if (etna_try_rs_blit(pctx, blit_info))
+       return;
+ 
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_screen.c b/src/gallium/drivers/etnaviv/etnaviv_screen.c
+index 06e4b551d708..f1706a966585 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_screen.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_screen.c
+@@ -513,6 +513,9 @@ gpu_supports_texure_format(struct etna_screen *screen, uint32_t fmt,
+       supported = screen->specs.tex_astc;
+    }
+ 
++   if (util_format_is_yuv(format))
++      supported = !!screen->gpu2d;
++
+    if (!supported)
+       return false;
+ 
+@@ -631,7 +634,7 @@ etna_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
+       if (modifiers)
+          modifiers[num_modifiers] = supported_modifiers[i];
+       if (external_only)
+-         external_only[num_modifiers] = util_format_is_yuv(format) ? 1 : 0;
++         external_only[num_modifiers] = 0;
+       num_modifiers++;
+    }
+ 
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_texture.c b/src/gallium/drivers/etnaviv/etnaviv_texture.c
+index 72ef00bcb265..8228a8eb0a41 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_texture.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_texture.c
+@@ -164,6 +164,9 @@ etna_update_sampler_source(struct pipe_sampler_view *view, int num)
+ static bool
+ etna_resource_sampler_compatible(struct etna_resource *res)
+ {
++   if (util_format_is_yuv(res->base.format))
++      return false;
++
+    if (util_format_is_compressed(res->base.format))
+       return true;
+ 
+@@ -201,6 +204,10 @@ etna_texture_handle_incompatible(struct pipe_context *pctx, struct pipe_resource
+ 
+          templat.bind &= ~(PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_RENDER_TARGET |
+                            PIPE_BIND_BLENDABLE);
++
++         if (util_format_is_yuv(prsc->format))
++            templat.format = PIPE_FORMAT_R8G8B8A8_UNORM;
++
+          res->texture =
+             etna_resource_alloc(pctx->screen, ETNA_LAYOUT_TILED,
+                                 DRM_FORMAT_MOD_LINEAR, &templat);

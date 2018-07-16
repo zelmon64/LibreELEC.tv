@@ -1,0 +1,34 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 23 May 2018 17:53:13 +0200
+Subject: [PATCH] etnaviv: improve PIPE_BIND_LINEAR handling
+
+We weren't handling this flag at all, which broke some assumptions
+made by the users of the resource_create interface. As we can't render
+to a linear surface and the usefulness of yet another layout transition
+to handle this case seems limited, we only respect the flag when the
+resource isn't used for rendering.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/drivers/etnaviv/etnaviv_resource.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_resource.c b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+index a075f1d0cc23..da204eaec546 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_resource.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+@@ -357,6 +357,14 @@ etna_resource_create(struct pipe_screen *pscreen,
+    if (templat->target == PIPE_TEXTURE_3D)
+       layout = ETNA_LAYOUT_LINEAR;
+ 
++   /* The render pipe can't handle linear and there is no code to do yet another
++    * layout transformation for this case, so we only respect the linear flag
++    * if the resource isn't meant to be rendered.
++    */
++   if ((templat->bind & PIPE_BIND_LINEAR) &&
++       !(templat->bind & PIPE_BIND_RENDER_TARGET))
++      layout = ETNA_LAYOUT_LINEAR;
++
+    /* modifier is only used for scanout surfaces, so safe to use LINEAR here */
+    return etna_resource_alloc(pscreen, layout, DRM_FORMAT_MOD_LINEAR, templat);
+ }

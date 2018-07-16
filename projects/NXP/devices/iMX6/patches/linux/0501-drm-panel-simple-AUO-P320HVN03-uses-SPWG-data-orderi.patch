@@ -1,0 +1,27 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 11 Apr 2018 17:20:19 +0200
+Subject: [PATCH] drm/panel: simple: AUO P320HVN03 uses SPWG data ordering
+
+The patch adding support for the AUO P320HVN03 panel was written against a
+preliminary datasheet, which specified JEIDA data ordering. Testing with
+real hardware has shown that the actually used data ordering is SPWG.
+
+Fixes: 70c0d5b783f5 (drm/panel: simple: add support for AUO P320HVN03)
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ drivers/gpu/drm/panel/panel-simple.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-simple.c b/drivers/gpu/drm/panel/panel-simple.c
+index cbf1ab404ee7..61d1de591319 100644
+--- a/drivers/gpu/drm/panel/panel-simple.c
++++ b/drivers/gpu/drm/panel/panel-simple.c
+@@ -687,7 +687,7 @@ static const struct panel_desc auo_p320hvn03 = {
+ 		.enable = 450,
+ 		.unprepare = 500,
+ 	},
+-	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_JEIDA,
++	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+ };
+ 
+ static const struct drm_display_mode auo_t215hvn01_mode = {

@@ -1,0 +1,44 @@
+From: Andrey Smirnov <andrew.smirnov@gmail.com>
+Date: Mon, 15 Jan 2018 20:43:57 -0800
+Subject: [PATCH] mfd: rave-sp: Convert print_hex_dump() to
+ print_hex_dump_debug()
+
+Convert print_hex_dump() to print_hex_dump_debug() to be able to
+leverage CONFIG_DYNAMIC_DEBUG.
+
+Cc: linux-kernel@vger.kernel.org
+Cc: cphealy@gmail.com
+Cc: Lucas Stach <l.stach@pengutronix.de>
+Cc: Lee Jones <lee.jones@linaro.org>
+Cc: Guenter Roeck <linux@roeck-us.net>
+Signed-off-by: Andrey Smirnov <andrew.smirnov@gmail.com>
+---
+ drivers/mfd/rave-sp.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/mfd/rave-sp.c b/drivers/mfd/rave-sp.c
+index 9e4c83ff2aec..cec1e309b31f 100644
+--- a/drivers/mfd/rave-sp.c
++++ b/drivers/mfd/rave-sp.c
+@@ -311,8 +311,8 @@ static int rave_sp_write(struct rave_sp *sp, const u8 *data, u8 data_size)
+ 
+ 	length = dest - frame;
+ 
+-	print_hex_dump(KERN_DEBUG, "rave-sp tx: ", DUMP_PREFIX_NONE,
+-		       16, 1, frame, length, false);
++	print_hex_dump_debug("rave-sp tx: ", DUMP_PREFIX_NONE,
++			     16, 1, frame, length, false);
+ 
+ 	return serdev_device_write(sp->serdev, frame, length, HZ);
+ }
+@@ -453,8 +453,8 @@ static void rave_sp_receive_frame(struct rave_sp *sp,
+ 	struct device *dev           = &sp->serdev->dev;
+ 	u8 crc_calculated[checksum_length];
+ 
+-	print_hex_dump(KERN_DEBUG, "rave-sp rx: ", DUMP_PREFIX_NONE,
+-		       16, 1, data, length, false);
++	print_hex_dump_debug("rave-sp rx: ", DUMP_PREFIX_NONE,
++			     16, 1, data, length, false);
+ 
+ 	if (unlikely(length <= checksum_length)) {
+ 		dev_warn(dev, "Dropping short frame\n");

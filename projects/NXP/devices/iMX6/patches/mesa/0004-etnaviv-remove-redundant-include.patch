@@ -1,0 +1,22 @@
+From: Christian Gmeiner <christian.gmeiner@gmail.com>
+Date: Fri, 20 Apr 2018 14:55:52 +0200
+Subject: [PATCH] etnaviv: remove redundant include
+
+Signed-off-by: Christian Gmeiner <christian.gmeiner@gmail.com>
+---
+ src/gallium/drivers/etnaviv/etnaviv_rs.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_rs.c b/src/gallium/drivers/etnaviv/etnaviv_rs.c
+index b8a3b12ae494..fc4f65dbeee1 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_rs.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_rs.c
+@@ -26,8 +26,6 @@
+ 
+ #include "etnaviv_rs.h"
+ 
+-#include "hw/common.xml.h"
+-
+ #include "etnaviv_clear_blit.h"
+ #include "etnaviv_context.h"
+ #include "etnaviv_emit.h"

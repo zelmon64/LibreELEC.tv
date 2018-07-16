@@ -1,0 +1,39 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 23 May 2018 17:19:52 +0200
+Subject: [PATCH] etnaviv: remember data offset into BO
+
+Imported resources might not start at offset 0 into the buffer object.
+Make sure to remember the offset that is provided with the handle on
+import.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/drivers/etnaviv/etnaviv_resource.c | 2 +-
+ src/gallium/drivers/etnaviv/etnaviv_resource.h | 1 +
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_resource.c b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+index b99378ec188e..a075f1d0cc23 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_resource.c
++++ b/src/gallium/drivers/etnaviv/etnaviv_resource.c
+@@ -512,7 +512,7 @@ etna_resource_from_handle(struct pipe_screen *pscreen,
+    rsc->seqno = 1;
+    rsc->layout = modifier_to_layout(handle->modifier);
+    rsc->halign = TEXTURE_HALIGN_FOUR;
+-
++   rsc->offset = handle->offset;
+ 
+    level->width = tmpl->width0;
+    level->height = tmpl->height0;
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_resource.h b/src/gallium/drivers/etnaviv/etnaviv_resource.h
+index 11ccf8f7bcbe..8dd12be06762 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_resource.h
++++ b/src/gallium/drivers/etnaviv/etnaviv_resource.h
+@@ -69,6 +69,7 @@ struct etna_resource {
+    /* Horizontal alignment for texture unit (TEXTURE_HALIGN_*) */
+    unsigned halign;
+    struct etna_bo *bo; /* Surface video memory */
++   uint32_t offset; /* data offset into the BO */
+    struct etna_bo *ts_bo; /* Tile status video memory */
+ 
+    struct etna_resource_level levels[ETNA_NUM_LOD];

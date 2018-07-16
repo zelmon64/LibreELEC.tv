@@ -1,0 +1,35 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Thu, 12 Apr 2018 17:32:21 +0200
+Subject: [PATCH] ARM: dts: imx6: RDU2: correct touchscreen axis inversion
+
+The RMI4 touchscreen driver applied inversion and axis swap in the
+wrong order, violating the DT binding for those properties. This is
+fixed now, so correct the RDU2 DT to apply the inversion to the
+correct axis.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+index d524fb2d57dc..a4e9c4da1105 100644
+--- a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
++++ b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+@@ -678,14 +678,14 @@
+ 
+ 		rmi4-f11@11 {
+ 			reg = <0x11>;
+-			touchscreen-inverted-y;
++			touchscreen-inverted-x;
+ 			touchscreen-swapped-x-y;
+ 			syna,sensor-type = <1>;
+ 		};
+ 
+ 		rmi4-f12@12 {
+ 			reg = <0x12>;
+-			touchscreen-inverted-y;
++			touchscreen-inverted-x;
+ 			touchscreen-swapped-x-y;
+ 			syna,sensor-type = <1>;
+ 		};

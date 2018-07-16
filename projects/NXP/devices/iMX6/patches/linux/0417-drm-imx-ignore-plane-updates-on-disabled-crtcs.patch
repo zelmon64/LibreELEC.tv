@@ -1,0 +1,37 @@
+From: Philipp Zabel <p.zabel@pengutronix.de>
+Date: Thu, 29 Jun 2017 14:43:30 +0200
+Subject: [PATCH] drm/imx: ignore plane updates on disabled crtcs
+
+This patch fixes backtraces like the following when sending SIGKILL to a
+process with a currently pending plane update:
+
+    [drm:ipu_plane_atomic_check] CRTC should be enabled
+    [drm:drm_framebuffer_remove] *ERROR* failed to commit
+    ------------[ cut here ]------------
+    WARNING: CPU: 3 PID: 63 at drivers/gpu/drm/drm_framebuffer.c:926 drm_framebuffer_remove+0x47c/0x498
+    atomic remove_fb failed with -22
+
+Signed-off-by: Philipp Zabel <p.zabel@pengutronix.de>
+---
+ drivers/gpu/drm/imx/ipuv3-plane.c | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gpu/drm/imx/ipuv3-plane.c b/drivers/gpu/drm/imx/ipuv3-plane.c
+index 1e1d01057dad..d5eb63cdfebe 100644
+--- a/drivers/gpu/drm/imx/ipuv3-plane.c
++++ b/drivers/gpu/drm/imx/ipuv3-plane.c
+@@ -388,11 +388,9 @@ static int ipu_plane_atomic_check(struct drm_plane *plane,
+ 	drm_rect_debug_print("src: ", &state->src, true);
+ 	drm_rect_debug_print("dst: ", &state->dst, false);
+ 
+-	/* CRTC should be enabled */
+-	if (!crtc_state->enable) {
+-		DRM_DEBUG_KMS("CRTC should be enabled\n");
+-		return -EINVAL;
+-	}
++	/* nothing to check when disabling or disabled */
++	if (!crtc_state->enable)
++		return 0;
+ 
+ 	switch (plane->type) {
+ 	case DRM_PLANE_TYPE_PRIMARY:

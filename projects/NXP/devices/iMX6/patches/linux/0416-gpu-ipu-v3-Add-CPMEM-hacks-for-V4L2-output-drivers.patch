@@ -1,0 +1,122 @@
+From: Philipp Zabel <p.zabel@pengutronix.de>
+Date: Wed, 30 Jul 2014 14:07:30 +0200
+Subject: [PATCH] gpu: ipu-v3: Add CPMEM hacks for V4L2 output drivers
+
+The V4L2 output drivers need some information about running IDMAC channels.
+Provide it to them.
+
+Signed-off-by: Philipp Zabel <p.zabel@pengutronix.de>
+---
+ drivers/gpu/drm/imx/ipuv3-plane.c |  2 ++
+ drivers/gpu/ipu-v3/ipu-cpmem.c    | 55 +++++++++++++++++++++++++++++++++++++++
+ drivers/gpu/ipu-v3/ipu-prv.h      |  1 +
+ include/video/imx-ipu-v3.h        |  5 ++++
+ 4 files changed, 63 insertions(+)
+
+diff --git a/drivers/gpu/drm/imx/ipuv3-plane.c b/drivers/gpu/drm/imx/ipuv3-plane.c
+index c214e7e1165f..1e1d01057dad 100644
+--- a/drivers/gpu/drm/imx/ipuv3-plane.c
++++ b/drivers/gpu/drm/imx/ipuv3-plane.c
+@@ -630,6 +630,8 @@ static void ipu_plane_atomic_update(struct drm_plane *plane,
+ 		/* nothing to do if PRE is used */
+ 		if (ipu_state->use_pre)
+ 			return;
++		if (ipu_cpmem_vout_backoff(ipu_plane->ipu_ch))
++			return;
+ 		active = ipu_idmac_get_current_buffer(ipu_plane->ipu_ch);
+ 		ipu_cpmem_set_buffer(ipu_plane->ipu_ch, !active, eba);
+ 		ipu_idmac_select_buffer(ipu_plane->ipu_ch, !active);
+diff --git a/drivers/gpu/ipu-v3/ipu-cpmem.c b/drivers/gpu/ipu-v3/ipu-cpmem.c
+index 231769661cf7..f12eda11726d 100644
+--- a/drivers/gpu/ipu-v3/ipu-cpmem.c
++++ b/drivers/gpu/ipu-v3/ipu-cpmem.c
+@@ -882,6 +882,61 @@ void ipu_cpmem_dump(struct ipuv3_channel *ch)
+ }
+ EXPORT_SYMBOL_GPL(ipu_cpmem_dump);
+ 
++/*
++ * The following three functions are a major hack for the V4L2 overlay driver
++ */
++void ipu_cpmem_get_base_resolution(struct ipu_soc *ipu, u32 *width, u32 *height)
++{
++	struct ipuv3_channel *ch;
++
++	list_for_each_entry(ch, &ipu->channels, list) {
++		if (ch->num == IPUV3_CHANNEL_MEM_BG_SYNC) {
++			*width = ipu_ch_param_read_field(ch, IPU_FIELD_FW) + 1;
++			*height = ipu_ch_param_read_field(ch, IPU_FIELD_FH) + 1;
++			return;
++		}
++	}
++
++	*width = *height = 0;
++}
++
++int ipu_cpmem_save(struct ipuv3_channel *ch, void **cpmem, u32 *eba)
++{
++	struct ipu_ch_param __iomem *p = ipu_get_cpmem(ch);
++
++	if (*cpmem)
++		kfree(cpmem);
++	*cpmem = kzalloc(sizeof(**cpmem), GFP_KERNEL);
++	if (!*cpmem)
++		return -ENOMEM;
++
++	memcpy(*cpmem, p, sizeof(struct ipu_ch_param));
++	*eba = ipu_ch_param_read_field(ch, IPU_FIELD_EBA0) << 3;
++
++	ch->vout_active = true;
++
++	return 0;
++}
++
++void ipu_cpmem_restore(struct ipuv3_channel *ch, void **cpmem)
++{
++	struct ipu_ch_param __iomem *p = ipu_get_cpmem(ch);
++
++	if (!*cpmem)
++		return;
++
++	memcpy(p, *cpmem, sizeof(struct ipu_ch_param));
++	kfree(*cpmem);
++	*cpmem = NULL;
++
++	ch->vout_active = false;
++}
++
++bool ipu_cpmem_vout_backoff(struct ipuv3_channel *ch)
++{
++	return ch->vout_active;
++}
++
+ int ipu_cpmem_init(struct ipu_soc *ipu, struct device *dev, unsigned long base)
+ {
+ 	struct ipu_cpmem *cpmem;
+diff --git a/drivers/gpu/ipu-v3/ipu-prv.h b/drivers/gpu/ipu-v3/ipu-prv.h
+index d6beee99b6b8..27e63cf6f79a 100644
+--- a/drivers/gpu/ipu-v3/ipu-prv.h
++++ b/drivers/gpu/ipu-v3/ipu-prv.h
+@@ -159,6 +159,7 @@ struct ipuv3_channel {
+ 	unsigned int num;
+ 	struct ipu_soc *ipu;
+ 	struct list_head list;
++	bool vout_active;
+ };
+ 
+ struct ipu_cpmem;
+diff --git a/include/video/imx-ipu-v3.h b/include/video/imx-ipu-v3.h
+index 4c37bb5a39a5..47e8fe15eaa7 100644
+--- a/include/video/imx-ipu-v3.h
++++ b/include/video/imx-ipu-v3.h
+@@ -280,6 +280,11 @@ void ipu_cpmem_set_yuv_planar_full(struct ipuv3_channel *ch,
+ int ipu_cpmem_set_fmt(struct ipuv3_channel *ch, u32 drm_fourcc);
+ int ipu_cpmem_set_image(struct ipuv3_channel *ch, struct ipu_image *image);
+ void ipu_cpmem_dump(struct ipuv3_channel *ch);
++/* Hacks for V4L2 overlay driver */
++void ipu_cpmem_get_base_resolution(struct ipu_soc *ipu, u32 *width, u32 *height);
++int ipu_cpmem_save(struct ipuv3_channel *ch, void **cpmem, u32 *eba);
++void ipu_cpmem_restore(struct ipuv3_channel *ch, void **cpmem);
++bool ipu_cpmem_vout_backoff(struct ipuv3_channel *ch);
+ 
+ /*
+  * IPU Display Controller (dc) functions

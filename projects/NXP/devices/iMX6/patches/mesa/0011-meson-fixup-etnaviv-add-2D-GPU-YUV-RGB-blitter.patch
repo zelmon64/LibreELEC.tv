@@ -1,0 +1,33 @@
+From: Philipp Zabel <p.zabel@pengutronix.de>
+Date: Mon, 4 Jun 2018 14:34:03 +0200
+Subject: [PATCH] meson: fixup! etnaviv: add 2D GPU YUV->RGB blitter
+
+To be squashed into "etnaviv: add 2D GPU YUV->RGB blitter".
+Depends on "etnaviv: Fix missing rnndb file in tarballs", so
+this can be squashed after rebasing onto 18.1.1 or later, or
+after sorting the prerequisite patch before the to-be-fixed
+patch during the next rebase.
+
+Signed-off-by: Philipp Zabel <p.zabel@pengutronix.de>
+---
+ src/gallium/drivers/etnaviv/meson.build | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/gallium/drivers/etnaviv/meson.build b/src/gallium/drivers/etnaviv/meson.build
+index 1733024ac988..103ed2a2b6a0 100644
+--- a/src/gallium/drivers/etnaviv/meson.build
++++ b/src/gallium/drivers/etnaviv/meson.build
+@@ -23,10 +23,13 @@ files_etnaviv = files(
+   'hw/common.xml.h',
+   'hw/common_3d.xml.h',
+   'hw/isa.xml.h',
++  'hw/state_2d.xml.h',
+   'hw/state_3d.xml.h',
+   'hw/state_blt.xml.h',
+   'hw/state.xml.h',
+   'hw/texdesc_3d.xml.h',
++  'etnaviv_2d.c',
++  'etnaviv_2d.h',
+   'etnaviv_asm.c',
+   'etnaviv_asm.h',
+   'etnaviv_blend.c',

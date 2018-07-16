@@ -1,0 +1,25 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Thu, 6 Oct 2016 18:37:59 +0200
+Subject: [PATCH] ARM: dts: imx6: RDU2: add assigned clocks for GPU 3D
+
+This downclocks the shader domain from 720MHz to 594MHz, which gets rid
+of brown-outs due to excessive current draw on the PMIC switchers.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ arch/arm/boot/dts/imx6qp-zii-rdu2.dts | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/arch/arm/boot/dts/imx6qp-zii-rdu2.dts b/arch/arm/boot/dts/imx6qp-zii-rdu2.dts
+index de5b50df833c..8c293e9f36a7 100644
+--- a/arch/arm/boot/dts/imx6qp-zii-rdu2.dts
++++ b/arch/arm/boot/dts/imx6qp-zii-rdu2.dts
+@@ -53,3 +53,8 @@
+ 		reg = <0x10000000 0>;
+ 	};
+ };
++
++&gpu_3d {
++	assigned-clocks = <&clks IMX6QDL_CLK_GPU3D_SHADER_SEL>;
++	assigned-clock-parents = <&clks IMX6QDL_CLK_PLL2_PFD1_594M>;
++};

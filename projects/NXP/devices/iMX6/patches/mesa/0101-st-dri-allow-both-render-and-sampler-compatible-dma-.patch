@@ -1,0 +1,86 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Mon, 26 Mar 2018 16:39:28 +0200
+Subject: [PATCH] st/dri: allow both render and sampler compatible dma-buf
+ formats
+
+Currently all the EGL APIs are missing a way to specify how an imported
+dma-buf is intended to be used. Demanding the format to be both usable
+for sampling and rendering artificially restricts the list of formats a
+driver is able to import.
+
+Looking at how the Intel driver implements those DRI2 image APIs it
+doesn't distinguish between render or sampler compatible formats. So
+this patch aligns behavior between Intel and Gallium based drivers.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/gallium/state_trackers/dri/dri2.c | 29 ++++++++++++++++++-----------
+ 1 file changed, 18 insertions(+), 11 deletions(-)
+
+diff --git a/src/gallium/state_trackers/dri/dri2.c b/src/gallium/state_trackers/dri/dri2.c
+index 58a6757f037a..859161fb87ac 100644
+--- a/src/gallium/state_trackers/dri/dri2.c
++++ b/src/gallium/state_trackers/dri/dri2.c
+@@ -991,16 +991,21 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
+    struct pipe_screen *pscreen = screen->base.screen;
+    __DRIimage *img;
+    struct pipe_resource templ;
+-   unsigned tex_usage;
++   unsigned tex_usage = 0;
+    enum pipe_format pf;
+    int i;
+ 
+-   tex_usage = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+-
+    pf = dri2_format_to_pipe_format (format);
+    if (pf == PIPE_FORMAT_NONE)
+       return NULL;
+ 
++   if (pscreen->is_format_supported(pscreen, pf, screen->target, 0,
++                                    PIPE_BIND_RENDER_TARGET))
++      tex_usage |= PIPE_BIND_RENDER_TARGET;
++   if (pscreen->is_format_supported(pscreen, pf, screen->target, 0,
++                                    PIPE_BIND_SAMPLER_VIEW))
++      tex_usage |= PIPE_BIND_SAMPLER_VIEW;
++
+    img = CALLOC_STRUCT(__DRIimageRec);
+    if (!img)
+       return NULL;
+@@ -1477,16 +1482,16 @@ dri2_query_dma_buf_formats(__DRIscreen *_screen, int max, int *formats,
+ {
+    struct dri_screen *screen = dri_screen(_screen);
+    struct pipe_screen *pscreen = screen->base.screen;
+-   const unsigned bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+    int i, j;
+ 
+    for (i = 0, j = 0; (i < ARRAY_SIZE(fourcc_formats)) &&
+          (j < max || max == 0); i++) {
+-      if (pscreen->is_format_supported(pscreen,
+-                                       fourcc_to_pipe_format(
+-                                          fourcc_formats[i]),
+-                                       screen->target,
+-                                       0, bind)) {
++      enum pipe_format format = fourcc_to_pipe_format(fourcc_formats[i]);
++
++      if (pscreen->is_format_supported(pscreen, format, screen->target, 0,
++                                       PIPE_BIND_RENDER_TARGET) ||
++          pscreen->is_format_supported(pscreen, format, screen->target, 0,
++                                       PIPE_BIND_SAMPLER_VIEW)) {
+          if (j < max)
+             formats[j] = fourcc_formats[i];
+          j++;
+@@ -1504,10 +1509,12 @@ dri2_query_dma_buf_modifiers(__DRIscreen *_screen, int fourcc, int max,
+    struct dri_screen *screen = dri_screen(_screen);
+    struct pipe_screen *pscreen = screen->base.screen;
+    enum pipe_format format = fourcc_to_pipe_format(fourcc);
+-   const unsigned usage = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+ 
+    if (pscreen->query_dmabuf_modifiers != NULL &&
+-       pscreen->is_format_supported(pscreen, format, screen->target, 0, usage)) {
++       (pscreen->is_format_supported(pscreen, format, screen->target, 0,
++                                     PIPE_BIND_RENDER_TARGET) ||
++        pscreen->is_format_supported(pscreen, format, screen->target, 0,
++                                     PIPE_BIND_SAMPLER_VIEW))) {
+       pscreen->query_dmabuf_modifiers(pscreen, format, max, modifiers,
+                                       external_only, count);
+       return true;

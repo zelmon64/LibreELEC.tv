@@ -1,0 +1,12 @@
+[Unit]
+Description=RDU network
+After=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rdu-network start
+RemainAfterExit=true
+ExecStop=/usr/bin/rdu-network stop
+
+[Install]
+WantedBy=multi-user.target

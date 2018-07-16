@@ -1,0 +1,30 @@
+From: Christian Gmeiner <christian.gmeiner@gmail.com>
+Date: Fri, 20 Apr 2018 14:55:53 +0200
+Subject: [PATCH] etnaviv: remove not needed includes
+
+Signed-off-by: Christian Gmeiner <christian.gmeiner@gmail.com>
+---
+ src/gallium/drivers/etnaviv/etnaviv_translate.h | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/src/gallium/drivers/etnaviv/etnaviv_translate.h b/src/gallium/drivers/etnaviv/etnaviv_translate.h
+index 7c85f81a707c..88ce107a9271 100644
+--- a/src/gallium/drivers/etnaviv/etnaviv_translate.h
++++ b/src/gallium/drivers/etnaviv/etnaviv_translate.h
+@@ -30,7 +30,6 @@
+ 
+ #include "etnaviv_debug.h"
+ #include "etnaviv_format.h"
+-#include "etnaviv_tiling.h"
+ #include "etnaviv_util.h"
+ #include "hw/cmdstream.xml.h"
+ #include "hw/common_3d.xml.h"
+@@ -40,8 +39,6 @@
+ #include "util/u_format.h"
+ #include "util/u_math.h"
+ 
+-#include <stdio.h>
+-
+ /* Returned when there is no match of pipe value to etna value */
+ #define ETNA_NO_MATCH (~0)
+ 

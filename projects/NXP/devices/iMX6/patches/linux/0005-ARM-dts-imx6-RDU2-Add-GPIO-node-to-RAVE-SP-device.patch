@@ -1,0 +1,27 @@
+From: Andrey Smirnov <andrew.smirnov@gmail.com>
+Date: Tue, 9 Jan 2018 09:48:32 -0800
+Subject: [PATCH] ARM: dts: imx6: RDU2: Add GPIO node to RAVE SP device
+
+Signed-off-by: Andrey Smirnov <andrew.smirnov@gmail.com>
+---
+ arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+index 5a1a0cdddd18..352eec269025 100644
+--- a/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
++++ b/arch/arm/boot/dts/imx6qdl-zii-rdu2.dtsi
+@@ -366,6 +366,13 @@
+ 			compatible = "zii,rave-sp-pwrbutton";
+ 			status = "okay";
+ 		};
++
++		gpio {
++			compatible = "zii,rave-sp-gpio";
++			status = "okay";
++			gpio-controller;
++			#gpio-cells = <1>;
++		};
+ 	};
+ };
+ 

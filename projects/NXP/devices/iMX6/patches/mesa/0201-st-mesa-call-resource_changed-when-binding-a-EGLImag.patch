@@ -1,0 +1,27 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Tue, 20 Mar 2018 12:14:12 +0100
+Subject: [PATCH] st/mesa: call resource_changed when binding a EGLImage to a
+ texture
+
+When a EGLImage is newly bound to a texture, we need to make sure the
+driver is informed that the resource might have changed. Fixes stale
+texture content on Etnaviv when binding an existing EGLImage to an
+existing texture object.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/mesa/state_tracker/st_cb_eglimage.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/mesa/state_tracker/st_cb_eglimage.c b/src/mesa/state_tracker/st_cb_eglimage.c
+index bb092a2f6ef1..4f33cb4bb062 100644
+--- a/src/mesa/state_tracker/st_cb_eglimage.c
++++ b/src/mesa/state_tracker/st_cb_eglimage.c
+@@ -229,6 +229,7 @@ st_bind_egl_image(struct gl_context *ctx,
+    pipe_resource_reference(&stObj->pt, stimg->texture);
+    st_texture_release_all_sampler_views(st, stObj);
+    pipe_resource_reference(&stImage->pt, stObj->pt);
++   st->pipe->screen->resource_changed(st->pipe->screen, stImage->pt);
+ 
+    stObj->surface_format = stimg->format;
+    stObj->level_override = stimg->level;

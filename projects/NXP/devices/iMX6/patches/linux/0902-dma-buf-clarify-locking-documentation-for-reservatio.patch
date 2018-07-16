@@ -1,0 +1,27 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Thu, 11 Jan 2018 17:48:29 +0100
+Subject: [PATCH] dma-buf: clarify locking documentation for
+ reservation_object_get_excl
+
+The documentation was misleading, as for a lot of use-cases holding
+the RCU read side lock is sufficient.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ include/linux/reservation.h | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/reservation.h b/include/linux/reservation.h
+index 02166e815afb..d711f98b10b7 100644
+--- a/include/linux/reservation.h
++++ b/include/linux/reservation.h
+@@ -227,7 +227,8 @@ reservation_object_unlock(struct reservation_object *obj)
+  * @obj: the reservation object
+  *
+  * Returns the exclusive fence (if any).  Does NOT take a
+- * reference.  The obj->lock must be held.
++ * reference. Writers must hold obj->lock, readers may only
++ * hold a RCU read side lock.
+  *
+  * RETURNS
+  * The exclusive fence or NULL

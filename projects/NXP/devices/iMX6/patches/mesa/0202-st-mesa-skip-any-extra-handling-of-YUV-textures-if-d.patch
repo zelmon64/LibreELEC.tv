@@ -1,0 +1,116 @@
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Wed, 23 May 2018 18:47:55 +0200
+Subject: [PATCH] st/mesa: skip any extra handling of YUV textures if driver
+ supports them
+
+If the driver provides native support for YUV textures we can skip
+adding additional samplers and re-writing the shaders.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+---
+ src/mesa/state_tracker/st_atom_sampler.c |  6 ++++++
+ src/mesa/state_tracker/st_atom_texture.c |  6 ++++++
+ src/mesa/state_tracker/st_program.h      |  6 ++++++
+ src/mesa/state_tracker/st_sampler_view.c | 21 +++++++++++++--------
+ 4 files changed, 31 insertions(+), 8 deletions(-)
+
+diff --git a/src/mesa/state_tracker/st_atom_sampler.c b/src/mesa/state_tracker/st_atom_sampler.c
+index 289856cd72de..352be8350769 100644
+--- a/src/mesa/state_tracker/st_atom_sampler.c
++++ b/src/mesa/state_tracker/st_atom_sampler.c
+@@ -300,10 +300,16 @@ update_shader_samplers(struct st_context *st,
+       struct st_texture_object *stObj =
+             st_get_texture_object(st->ctx, prog, unit);
+       struct pipe_sampler_state *sampler = samplers + unit;
++      struct pipe_screen *pscreen = st->pipe->screen;
+ 
+       if (!stObj)
+          continue;
+ 
++      if (pscreen->is_format_supported(pscreen, st_get_view_format(stObj),
++                                       PIPE_TEXTURE_2D, 0,
++                                       PIPE_BIND_SAMPLER_VIEW))
++         continue;
++
+       switch (st_get_view_format(stObj)) {
+       case PIPE_FORMAT_NV12:
+          /* we need one additional sampler: */
+diff --git a/src/mesa/state_tracker/st_atom_texture.c b/src/mesa/state_tracker/st_atom_texture.c
+index ce7755f0c588..6616f2a6279a 100644
+--- a/src/mesa/state_tracker/st_atom_texture.c
++++ b/src/mesa/state_tracker/st_atom_texture.c
+@@ -174,11 +174,17 @@ update_textures(struct st_context *st,
+       GLuint extra = 0;
+       struct st_texture_object *stObj =
+             st_get_texture_object(st->ctx, prog, unit);
++      struct pipe_screen *pscreen = st->pipe->screen;
+       struct pipe_sampler_view tmpl;
+ 
+       if (!stObj)
+          continue;
+ 
++      if (pscreen->is_format_supported(pscreen, st_get_view_format(stObj),
++                                       sampler_views[unit]->target, 0,
++                                       PIPE_BIND_SAMPLER_VIEW))
++         continue;
++
+       /* use original view as template: */
+       tmpl = *sampler_views[unit];
+ 
+diff --git a/src/mesa/state_tracker/st_program.h b/src/mesa/state_tracker/st_program.h
+index a520ffbecb48..9adfb2357085 100644
+--- a/src/mesa/state_tracker/st_program.h
++++ b/src/mesa/state_tracker/st_program.h
+@@ -67,6 +67,12 @@ st_get_external_sampler_key(struct st_context *st, struct gl_program *prog)
+       unsigned unit = u_bit_scan(&mask);
+       struct st_texture_object *stObj =
+             st_get_texture_object(st->ctx, prog, unit);
++      struct pipe_screen *pscreen = st->pipe->screen;
++
++      if (pscreen->is_format_supported(pscreen, st_get_view_format(stObj),
++                                       PIPE_TEXTURE_2D, 0,
++                                       PIPE_BIND_SAMPLER_VIEW))
++         continue;
+ 
+       switch (st_get_view_format(stObj)) {
+       case PIPE_FORMAT_NV12:
+diff --git a/src/mesa/state_tracker/st_sampler_view.c b/src/mesa/state_tracker/st_sampler_view.c
+index b737011d5018..4d12345d5dc7 100644
+--- a/src/mesa/state_tracker/st_sampler_view.c
++++ b/src/mesa/state_tracker/st_sampler_view.c
+@@ -447,6 +447,7 @@ get_sampler_view_format(struct st_context *st,
+                         const struct st_texture_object *stObj,
+                         bool srgb_skip_decode)
+ {
++   struct pipe_screen *pscreen = st->pipe->screen;
+    enum pipe_format format;
+ 
+    GLenum baseFormat = _mesa_base_tex_image(&stObj->base)->_BaseFormat;
+@@ -465,15 +466,19 @@ get_sampler_view_format(struct st_context *st,
+    if (srgb_skip_decode)
+       format = util_format_linear(format);
+ 
+-   /* Use R8_UNORM for video formats */
+-   switch (format) {
+-   case PIPE_FORMAT_NV12:
+-   case PIPE_FORMAT_IYUV:
+-      format = PIPE_FORMAT_R8_UNORM;
+-      break;
+-   default:
+-      break;
++   if (!pscreen->is_format_supported(pscreen, format, PIPE_TEXTURE_2D, 0,
++                                     PIPE_BIND_SAMPLER_VIEW)) {
++      /* Use R8_UNORM for video formats */
++      switch (format) {
++      case PIPE_FORMAT_NV12:
++      case PIPE_FORMAT_IYUV:
++         format = PIPE_FORMAT_R8_UNORM;
++         break;
++      default:
++         break;
++      }
+    }
++
+    return format;
+ }
+ 
