@@ -1,0 +1,55 @@
+From 21a2b912bfe37d6815adb854f90c579112813d74 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 21 Feb 2018 16:54:20 +0000
+Subject: [PATCH 46/80] staging: bcm2835-camera: Fix space before \n in strings
+
+Fix checkpatch error for spaces before in string literal.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+index 18d9b3504af5..084bdc0fb968 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+@@ -382,7 +382,7 @@ static int bulk_receive(struct vchiq_mmal_instance *instance,
+ {
+ 	unsigned long rd_len;
+ 
+-	pr_err("%s: ctx: %p, \n", __func__, msg_context);
++	pr_err("%s: ctx: %p,\n", __func__, msg_context);
+ 
+ 	rd_len = msg->u.buffer_from_host.buffer_header.length;
+ 
+@@ -433,7 +433,7 @@ static int dummy_bulk_receive(struct vchiq_mmal_instance *instance,
+ {
+ 	int ret;
+ 
+-	pr_err("%s: ctx: %p, \n", __func__, msg_context);
++	pr_err("%s: ctx: %p,\n", __func__, msg_context);
+ 
+ 	/* zero length indicates this was a dummy transfer */
+ 	msg_context->u.bulk.buffer_used = 0;
+@@ -450,7 +450,7 @@ static int dummy_bulk_receive(struct vchiq_mmal_instance *instance,
+ 
+ 	vchi_service_release(instance->handle);
+ 
+-	pr_err("%s: exit ctx: %p, \n", __func__, msg_context);
++	pr_err("%s: exit ctx: %p,\n", __func__, msg_context);
+ 	return ret;
+ }
+ 
+@@ -459,7 +459,7 @@ static int inline_receive(struct vchiq_mmal_instance *instance,
+ 			  struct mmal_msg *msg,
+ 			  struct mmal_msg_context *msg_context)
+ {
+-	pr_err("%s: ctx: %p, \n", __func__, msg_context);
++	pr_err("%s: ctx: %p,\n", __func__, msg_context);
+ 
+ 	memcpy(msg_context->u.bulk.buffer->buffer,
+ 	       msg->u.buffer_from_host.short_data,
+-- 
+2.17.0
+

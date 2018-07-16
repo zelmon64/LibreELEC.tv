@@ -1,0 +1,60 @@
+From 76a455d209a12afee8fa5537db31355d3c5e8417 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Mon, 12 Feb 2018 17:30:46 +0000
+Subject: [PATCH 14/80] overlays: Add an overlay for loading the V4L2 driver.
+
+Now that the bcm2835-module is loaded via device tree, create
+an overlay to make that simpler.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ arch/arm/boot/dts/overlays/Makefile           |  1 +
+ .../dts/overlays/bcm2835-v4l2-overlay.dts     | 24 +++++++++++++++++++
+ 2 files changed, 25 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/bcm2835-v4l2-overlay.dts
+
+diff --git a/arch/arm/boot/dts/overlays/Makefile b/arch/arm/boot/dts/overlays/Makefile
+index e1b5726da086..87427214329a 100644
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -18,6 +18,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	audioinjector-wm8731-audio.dtbo \
+ 	audremap.dtbo \
+ 	balena-fin.dtbo \
++	bcm2835-v4l2.dtbo \
+ 	bmp085_i2c-sensor.dtbo \
+ 	dht11.dtbo \
+ 	dionaudio-loco.dtbo \
+diff --git a/arch/arm/boot/dts/overlays/bcm2835-v4l2-overlay.dts b/arch/arm/boot/dts/overlays/bcm2835-v4l2-overlay.dts
+new file mode 100644
+index 000000000000..213146bc60fb
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/bcm2835-v4l2-overlay.dts
+@@ -0,0 +1,24 @@
++/*
++ * Device tree overlay for V4L2 camera overlay
++ *
++ * Compile:
++ * dtc -@ -I dts -O dtb -o i2c0-bcm2708-overlay.dtb i2c0-bcm2708-overlay.dts
++ */
++
++/dts-v1/;
++/plugin/;
++
++/{
++	compatible = "brcm,bcm2708";
++
++	fragment@0 {
++		target = <&soc>;
++		__overlay__ {
++			v4l2: v4l2 {
++				compatible = "raspberrypi,bcm2835-v4l2";
++				status = "okay";
++			};
++		};
++	};
++
++};
+-- 
+2.17.0
+

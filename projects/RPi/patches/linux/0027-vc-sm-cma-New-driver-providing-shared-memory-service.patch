@@ -1,0 +1,3966 @@
+From 29b0e127292cb1eb6a07bc307aa1bf6a1e35c12d Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 28 Nov 2017 10:50:38 +0000
+Subject: [PATCH 27/80] vc-sm-cma: New driver providing shared memory services
+ with the VPU
+
+New driver that provides shared memory services with the VPU,
+but based on the kernel allocating memroy using CMA rather than
+mapping VPU memory into the ARM.
+
+It also includes the VPU being able to request memory allocations
+from the kernel, therefore removing the need for the gpu_mem
+carveout.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ arch/arm/boot/dts/bcm2708-rpi.dtsi            |   11 +
+ arch/arm/configs/bcm2709_defconfig            |    1 +
+ arch/arm/configs/bcmrpi_defconfig             |    1 +
+ drivers/char/broadcom/vc_sm/vmcs_sm.c         |    1 +
+ drivers/staging/vc04_services/Kconfig         |    2 +
+ drivers/staging/vc04_services/Makefile        |    1 +
+ .../staging/vc04_services/vc-sm-cma/Kconfig   |   10 +
+ .../staging/vc04_services/vc-sm-cma/Makefile  |    7 +
+ .../staging/vc04_services/vc-sm-cma/vc_sm.c   | 2136 +++++++++++++++++
+ .../staging/vc04_services/vc-sm-cma/vc_sm.h   |  219 ++
+ .../vc04_services/vc-sm-cma/vc_sm_cma.c       |  175 ++
+ .../vc04_services/vc-sm-cma/vc_sm_cma.h       |   31 +
+ .../vc04_services/vc-sm-cma/vc_sm_defs.h      |  296 +++
+ .../vc04_services/vc-sm-cma/vc_sm_knl.h       |   64 +
+ .../vc04_services/vc-sm-cma/vc_vchi_sm.c      |  548 +++++
+ .../vc04_services/vc-sm-cma/vc_vchi_sm.h      |  105 +
+ include/linux/broadcom/vc_sm_cma_ioctl.h      |  178 ++
+ 17 files changed, 3786 insertions(+)
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/Kconfig
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/Makefile
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/vc_sm.h
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/vc_sm_cma.c
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/vc_sm_cma.h
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/vc_sm_defs.h
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/vc_sm_knl.h
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/vc_vchi_sm.c
+ create mode 100644 drivers/staging/vc04_services/vc-sm-cma/vc_vchi_sm.h
+ create mode 100644 include/linux/broadcom/vc_sm_cma_ioctl.h
+
+diff --git a/arch/arm/boot/dts/bcm2708-rpi.dtsi b/arch/arm/boot/dts/bcm2708-rpi.dtsi
+index fe2694a1cbdc..3997e676dd16 100644
+--- a/arch/arm/boot/dts/bcm2708-rpi.dtsi
++++ b/arch/arm/boot/dts/bcm2708-rpi.dtsi
+@@ -81,6 +81,17 @@
+ 			status = "okay";
+ 		};
+ 
++		vcsmcma: vcsmcma {
++			compatible = "raspberrypi,bcm2835-vc-sm-cma";
++			firmware = <&firmware>;
++			status = "okay";
++		};
++
++		thermal: thermal@7e212000 {
++			#thermal-sensor-cells = <0>;
++			status = "okay";
++		};
++
+ 		/* Onboard audio */
+ 		audio: audio {
+ 			compatible = "brcm,bcm2835-audio";
+diff --git a/arch/arm/configs/bcm2709_defconfig b/arch/arm/configs/bcm2709_defconfig
+index da938b327b32..f579d1b90f31 100644
+--- a/arch/arm/configs/bcm2709_defconfig
++++ b/arch/arm/configs/bcm2709_defconfig
+@@ -1201,6 +1201,7 @@ CONFIG_BCM2835_VCHIQ=y
+ CONFIG_BCM2835_VCHIQ_SUPPORT_MEMDUMP=y
+ CONFIG_SND_BCM2835=m
+ CONFIG_VIDEO_BCM2835=m
++CONFIG_BCM_VC_SM_CMA=y
+ CONFIG_MAILBOX=y
+ CONFIG_BCM2835_MBOX=y
+ # CONFIG_IOMMU_SUPPORT is not set
+diff --git a/arch/arm/configs/bcmrpi_defconfig b/arch/arm/configs/bcmrpi_defconfig
+index 63cdbf7d08a7..b8f69a3f6954 100644
+--- a/arch/arm/configs/bcmrpi_defconfig
++++ b/arch/arm/configs/bcmrpi_defconfig
+@@ -1194,6 +1194,7 @@ CONFIG_BCM2835_VCHIQ=y
+ CONFIG_BCM2835_VCHIQ_SUPPORT_MEMDUMP=y
+ CONFIG_SND_BCM2835=m
+ CONFIG_VIDEO_BCM2835=m
++CONFIG_BCM_VC_SM_CMA=y
+ CONFIG_MAILBOX=y
+ CONFIG_BCM2835_MBOX=y
+ # CONFIG_IOMMU_SUPPORT is not set
+diff --git a/drivers/char/broadcom/vc_sm/vmcs_sm.c b/drivers/char/broadcom/vc_sm/vmcs_sm.c
+index 193468627482..6a9ab0dbe182 100644
+--- a/drivers/char/broadcom/vc_sm/vmcs_sm.c
++++ b/drivers/char/broadcom/vc_sm/vmcs_sm.c
+@@ -46,6 +46,7 @@
+ 
+ #include <linux/broadcom/vmcs_sm_ioctl.h>
+ #include "vc_sm_knl.h"
++#include <linux/broadcom/vc_sm_cma_ioctl.h>
+ 
+ /* ---- Private Constants and Types --------------------------------------- */
+ 
+diff --git a/drivers/staging/vc04_services/Kconfig b/drivers/staging/vc04_services/Kconfig
+index 9e2763663ab8..ce4b35695bea 100644
+--- a/drivers/staging/vc04_services/Kconfig
++++ b/drivers/staging/vc04_services/Kconfig
+@@ -35,5 +35,7 @@ source "drivers/staging/vc04_services/bcm2835-audio/Kconfig"
+ 
+ source "drivers/staging/vc04_services/bcm2835-camera/Kconfig"
+ 
++source "drivers/staging/vc04_services/vc-sm-cma/Kconfig"
++
+ endif
+ 
+diff --git a/drivers/staging/vc04_services/Makefile b/drivers/staging/vc04_services/Makefile
+index 1ecb261e04ae..735ea76f3f2b 100644
+--- a/drivers/staging/vc04_services/Makefile
++++ b/drivers/staging/vc04_services/Makefile
+@@ -13,6 +13,7 @@ vchiq-objs := \
+ 
+ obj-$(CONFIG_SND_BCM2835)	+= bcm2835-audio/
+ obj-$(CONFIG_VIDEO_BCM2835)	+= bcm2835-camera/
++obj-$(CONFIG_BCM_VC_SM_CMA)	+= vc-sm-cma/
+ 
+ ccflags-y += -DVCOS_VERIFY_BKPTS=1 -Idrivers/staging/vc04_services -DUSE_VCHIQ_ARM -D__VCCOREVER__=0x04000000
+ 
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/Kconfig b/drivers/staging/vc04_services/vc-sm-cma/Kconfig
+new file mode 100644
+index 000000000000..d6af51cafa28
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/Kconfig
+@@ -0,0 +1,10 @@
++config BCM_VC_SM_CMA
++	tristate "VideoCore Shared Memory (CMA) driver"
++	depends on BCM2835_VCHIQ && CMA
++	select RBTREE
++	select DMA_SHARED_BUFFER
++	help
++	  Say Y here to enable the shared memory interface that
++	  allocates from a CMA heap and shares it with VideoCore.
++	  This operates over the VCHIQ interface to a service
++	  running on VideoCore.
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/Makefile b/drivers/staging/vc04_services/vc-sm-cma/Makefile
+new file mode 100644
+index 000000000000..9ffe0dd25e31
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/Makefile
+@@ -0,0 +1,7 @@
++#ccflags-$(CONFIG_BCM_VC_SM) += -Werror -Wall -Wstrict-prototypes -Wno-trigraphs -O2
++ccflags-$(CONFIG_BCM_VC_SM_CMA) += -I"drivers/staging/vc04_services" -I"drivers/staging/vc04_services/interface/vchi" -I"drivers/staging/vc04_services/interface/vchiq_arm"
++# -I"drivers/staging/android/ion/" -I"$(srctree)/fs/"
++#ccflags-$(CONFIG_BCM_VC_SM) += -DOS_ASSERT_FAILURE -D__STDC_VERSION=199901L -D__STDC_VERSION__=199901L -D__VCCOREVER__=0 -D__KERNEL__ -D__linux__
++ccflags-$(CONFIG_BCM_VC_SM) += -D__VCCOREVER__=0
++
++obj-$(CONFIG_BCM_VC_SM_CMA) := vc_sm.o vc_vchi_sm.o vc_sm_cma.o
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+new file mode 100644
+index 000000000000..3126a4bee83d
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+@@ -0,0 +1,2136 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * VideoCore Shared Memory driver using CMA.
++ *
++ * Copyright: 2018, Raspberry Pi (Trading) Ltd
++ * Dave Stevenson <dave.stevenson@raspberrypi.org>
++ *
++ * Based on vmcs_sm driver from Broadcom Corporation for some API,
++ * and taking some code for CMA/dmabuf handling from the Android Ion
++ * driver (Google/Linaro).
++ *
++ */
++
++/* ---- Include Files ----------------------------------------------------- */
++
++#include <linux/cdev.h>
++#include <linux/broadcom/vc_mem.h>
++#include <linux/device.h>
++#include <linux/debugfs.h>
++#include <linux/dma-mapping.h>
++#include <linux/dma-buf.h>
++#include <linux/errno.h>
++#include <linux/fs.h>
++#include <linux/hugetlb.h>
++#include <linux/ioctl.h>
++#include <linux/kernel.h>
++#include <linux/list.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mm.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pfn.h>
++#include <linux/proc_fs.h>
++#include <linux/pagemap.h>
++#include <linux/refcount.h>
++#include <linux/semaphore.h>
++#include <linux/slab.h>
++#include <linux/seq_file.h>
++#include <linux/syscalls.h>
++#include <linux/types.h>
++#include <asm/cacheflush.h>
++
++#include "vchiq_connected.h"
++#include "vc_vchi_sm.h"
++
++#include "vc_sm.h"
++#include "vc_sm_cma.h"
++#include "vc_sm_knl.h"
++#include <linux/broadcom/vc_sm_cma_ioctl.h>
++
++/* ---- Private Constants and Types --------------------------------------- */
++
++#define TEMPORARILY_DISABLED 0	//FIXME: Remove once all converted
++
++#define DEVICE_NAME		"vcsm-cma"
++#define DRIVER_NAME		"bcm2835-vcsm-cma"
++#define DEVICE_MINOR		0
++
++#define VC_SM_RESOURCE_NAME_DEFAULT       "sm-host-resource"
++
++#define VC_SM_DIR_ROOT_NAME	"vcsm-cma"
++#define VC_SM_DIR_ALLOC_NAME	"alloc"
++#define VC_SM_STATE		"state"
++#define VC_SM_STATS		"statistics"
++#define VC_SM_RESOURCES		"resources"
++#define VC_SM_DEBUG		"debug"
++#define VC_SM_WRITE_BUF_SIZE	128
++
++static const char *const sm_stats_human_read[] = {
++	"Alloc",
++	"Free",
++	"Lock",
++	"Unlock",
++	"Map",
++	"Cache Flush",
++	"Cache Invalidate",
++	"Import",
++};
++
++/* Private file data associated with each opened device. */
++struct vc_sm_privdata_t {
++	pid_t pid;                      /* PID of creator. */
++
++	int restart_sys;		/* Tracks restart on interrupt. */
++	enum vc_sm_msg_type int_action;	/* Interrupted action. */
++	u32 int_trans_id;		/* Interrupted transaction. */
++};
++
++typedef int (*VC_SM_SHOW) (struct seq_file *s, void *v);
++struct sm_pde_t {
++	VC_SM_SHOW show;          /* Debug fs function hookup. */
++	struct dentry *dir_entry; /* Debug fs directory entry. */
++	void *priv_data;          /* Private data */
++
++};
++
++/* Global state information. */
++struct sm_state_t {
++	struct platform_device *pdev;
++
++	struct miscdevice dev;
++	struct sm_instance *sm_handle;	/* Handle for videocore service. */
++	struct cma *cma_heap;
++
++	struct mutex map_lock;          /* Global map lock. */
++	struct list_head buffer_list;	/* List of buffer. */
++
++	struct vc_sm_privdata_t *data_knl;  /* Kernel internal data tracking. */
++	struct vc_sm_privdata_t *vpu_allocs; /* All allocations from the VPU */
++	struct dentry *dir_root;	/* Debug fs entries root. */
++	struct sm_pde_t dir_state;	/* Debug fs entries state sub-tree. */
++
++	bool require_released_callback;	/* VPU will send a released msg when it
++					 * has finished with a resource.
++					 */
++	u32 int_trans_id;		/* Interrupted transaction. */
++};
++
++/* ---- Private Variables ----------------------------------------------- */
++
++static struct sm_state_t *sm_state;
++static int sm_inited;
++
++#if TEMPORARILY_DISABLED
++typedef void cache_flush_op_fn(const void *, const void *);
++
++#if defined(CONFIG_CPU_CACHE_V7)
++extern cache_flush_op_fn v7_dma_inv_range;
++extern cache_flush_op_fn v7_dma_clean_range;
++static cache_flush_op_fn * const flushops[4] = {
++	0,
++	v7_dma_inv_range,
++	v7_dma_clean_range,
++	v7_dma_flush_range,
++};
++#elif defined(CONFIG_CPU_CACHE_V6)
++extern cache_flush_op_fn v6_dma_inv_range;
++extern cache_flush_op_fn v6_dma_clean_range;
++static cache_flush_op_fn * const flushops[4] = {
++	0,
++	v6_dma_inv_range,
++	v6_dma_clean_range,
++	v6_dma_flush_range,
++};
++#else
++#error Unknown cache config
++#endif
++#endif
++/* ---- Private Function Prototypes -------------------------------------- */
++
++/* ---- Private Functions ------------------------------------------------ */
++
++static int vc_sm_cma_seq_file_show(struct seq_file *s, void *v)
++{
++	struct sm_pde_t *sm_pde;
++
++	sm_pde = (struct sm_pde_t *)(s->private);
++
++	if (sm_pde && sm_pde->show)
++		sm_pde->show(s, v);
++
++	return 0;
++}
++
++static int vc_sm_cma_single_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, vc_sm_cma_seq_file_show, inode->i_private);
++}
++
++static const struct file_operations vc_sm_cma_debug_fs_fops = {
++	.open = vc_sm_cma_single_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++static int vc_sm_cma_global_state_show(struct seq_file *s, void *v)
++{
++	struct vc_sm_buffer *resource = NULL;
++	int resource_count = 0;
++
++	if (!sm_state)
++		return 0;
++
++	seq_printf(s, "\nVC-ServiceHandle     0x%x\n",
++		   (unsigned int)sm_state->sm_handle);
++
++	/* Log all applicable mapping(s). */
++
++	mutex_lock(&sm_state->map_lock);
++	seq_puts(s, "\nResources\n");
++	if (!list_empty(&sm_state->buffer_list)) {
++		list_for_each_entry(resource, &sm_state->buffer_list,
++				    global_buffer_list) {
++			resource_count++;
++
++			seq_printf(s, "\nResource                %p\n",
++				   resource);
++			seq_printf(s, "           NAME         %s\n",
++				   resource->name);
++			seq_printf(s, "           PID          %u\n",
++				   resource->pid);
++			seq_printf(s, "           RES_BASE_MEM %p\n",
++				   resource->res_base_mem);
++			seq_printf(s, "           SIZE         %d\n",
++				   resource->size);
++			seq_printf(s, "           DMABUF       %p\n",
++				   resource->dma_buf);
++			seq_printf(s, "           ATTACH       %p\n",
++				   resource->attach);
++			seq_printf(s, "           SG_TABLE     %p\n",
++				   resource->sg_table);
++			seq_printf(s, "           SGT          %p\n",
++				   resource->sgt);
++			seq_printf(s, "           DMA_ADDR     %pad\n",
++				   &resource->dma_addr);
++			seq_printf(s, "           VC_HANDLE     %08X\n",
++				   resource->vc_handle);
++			seq_printf(s, "           VC_MAPPING    %d\n",
++				   resource->vpu_state);
++			seq_printf(s, "           VPU_ALLOCATED %d\n",
++				   resource->vpu_allocated);
++		}
++	}
++	seq_printf(s, "\n\nTotal resource count:   %d\n\n", resource_count);
++
++	mutex_unlock(&sm_state->map_lock);
++
++	return 0;
++}
++
++/*
++ * Adds a buffer to the private data list which tracks all the allocated
++ * data.
++ */
++static void vc_sm_add_resource(struct vc_sm_privdata_t *privdata,
++			       struct vc_sm_buffer *buffer)
++{
++	mutex_lock(&sm_state->map_lock);
++	list_add(&buffer->global_buffer_list, &sm_state->buffer_list);
++	mutex_unlock(&sm_state->map_lock);
++
++	pr_debug("[%s]: added buffer %p (name %s, size %d)\n",
++		 __func__, buffer, buffer->name, buffer->size);
++}
++
++static void vc_sm_clean_up_dmabuf(struct vc_sm_buffer *buffer)
++{
++	/* Handle cleaning up imported dmabufs */
++	if (buffer->sgt) {
++		dma_buf_unmap_attachment(buffer->attach, buffer->sgt,
++					 DMA_BIDIRECTIONAL);
++		buffer->sgt = NULL;
++	}
++	if (buffer->attach) {
++		dma_buf_detach(buffer->dma_buf, buffer->attach);
++		buffer->attach = NULL;
++	}
++
++	/* Release the dma_buf (whether ours or imported) */
++	if (buffer->import_dma_buf) {
++		dma_buf_put(buffer->import_dma_buf);
++		buffer->import_dma_buf = NULL;
++		buffer->dma_buf = NULL;
++	} else if (buffer->dma_buf) {
++		dma_buf_put(buffer->dma_buf);
++		buffer->dma_buf = NULL;
++	}
++}
++
++static void vc_sm_destroy_buffer(struct vc_sm_buffer *buffer)
++{
++	pr_debug("[%s]: freeing buffer %p (name %s, size %d)\n",
++		 __func__, buffer, buffer->name, buffer->size);
++
++	mutex_destroy(&buffer->lock);
++
++	vc_sm_cma_buffer_free(buffer);
++
++	kfree(buffer);
++}
++
++/*
++ * Release a previously acquired buffer.
++ * All refcounting is done via the dma buf object.
++ */
++static void vc_sm_release_resource(struct vc_sm_buffer *buffer, int force)
++{
++	mutex_lock(&sm_state->map_lock);
++	mutex_lock(&buffer->lock);
++
++	pr_debug("[%s]: buffer %p (name %s, size %d)\n",
++		 __func__, buffer, buffer->name, buffer->size);
++
++	if (buffer->vc_handle && buffer->vpu_state == VPU_MAPPED) {
++		struct vc_sm_free_t free = {
++			buffer->vc_handle, (uint32_t)buffer->res_base_mem
++		};
++		int status = vc_sm_vchi_free(sm_state->sm_handle, &free,
++					     &sm_state->int_trans_id);
++		if (status != 0 && status != -EINTR) {
++			pr_err("[%s]: failed to free memory on videocore (status: %u, trans_id: %u)\n",
++			       __func__, status, sm_state->int_trans_id);
++		}
++
++		if (sm_state->require_released_callback) {
++			/* Need to wait for the VPU to confirm the free */
++
++			/* Retain a reference on this until the VPU has released it */
++			buffer->vpu_state = VPU_UNMAPPING;
++			mutex_unlock(&buffer->lock);
++			mutex_unlock(&sm_state->map_lock);
++			return;
++		}
++		buffer->vpu_state = VPU_NOT_MAPPED;
++		buffer->vc_handle = 0;
++	}
++	if (buffer->dma_buf) {
++		/* Don't release dmabuf here - we await the release */
++		pr_err("[%s]: release %p when dma_buf is still in use\n",
++		       __func__, buffer);
++		mutex_unlock(&buffer->lock);
++		mutex_unlock(&sm_state->map_lock);
++		return;
++	}
++
++	if (buffer->sg_table && !buffer->import_dma_buf) {
++		/* Our own allocation that we need to dma_unmap_sg */
++		dma_unmap_sg(&sm_state->pdev->dev, buffer->sg_table->sgl,
++			     buffer->sg_table->nents, DMA_BIDIRECTIONAL);
++	}
++
++	/* Time to free the buffer. Start by removing it from the list */
++	buffer->private = NULL;
++	list_del(&buffer->global_buffer_list);
++
++	mutex_unlock(&buffer->lock);
++	mutex_unlock(&sm_state->map_lock);
++
++	vc_sm_destroy_buffer(buffer);
++}
++
++/* Create support for private data tracking. */
++static struct vc_sm_privdata_t *vc_sm_cma_create_priv_data(pid_t id)
++{
++	char alloc_name[32];
++	struct vc_sm_privdata_t *file_data = NULL;
++
++	/* Allocate private structure. */
++	file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
++
++	if (!file_data) {
++		pr_err("[%s]: cannot allocate file data\n", __func__);
++		return NULL;
++	}
++
++	snprintf(alloc_name, sizeof(alloc_name), "%d", id);
++
++	file_data->pid = id;
++
++	return file_data;
++}
++
++/*
++ * Open the device.  Creates a private state to help track all allocation
++ * associated with this device.
++ */
++static int vc_sm_cma_open(struct inode *inode, struct file *file)
++{
++	int ret = 0;
++
++	/* Make sure the device was started properly. */
++	if (!sm_state) {
++		pr_err("[%s]: invalid device\n", __func__);
++		return -EPERM;
++	}
++
++	file->private_data = vc_sm_cma_create_priv_data(current->tgid);
++	if (!file->private_data) {
++		pr_err("[%s]: failed to create data tracker\n", __func__);
++
++		return -ENOMEM;
++	}
++
++	return ret;
++}
++
++/*
++ * Close the vcsm-cma device.
++ * All allocations are file descriptors to the dmabuf objects, so we will get the
++ * clean up request on those as those are cleaned up.
++ */
++static int vc_sm_cma_release(struct inode *inode, struct file *file)
++{
++	struct vc_sm_privdata_t *file_data =
++	    (struct vc_sm_privdata_t *)file->private_data;
++	int ret = 0;
++
++	/* Make sure the device was started properly. */
++	if (!sm_state || !file_data) {
++		pr_err("[%s]: invalid device\n", __func__);
++		ret = -EPERM;
++		goto out;
++	}
++
++	pr_debug("[%s]: using private data %p\n", __func__, file_data);
++
++	/* Terminate the private data. */
++	kfree(file_data);
++
++out:
++	return ret;
++}
++
++#if TEMPORARILY_DISABLED
++/* Walks a VMA and clean each valid page from the cache */
++static void vcsm_vma_cache_clean_page_range(unsigned long addr,
++					    unsigned long end)
++{
++	pgd_t *pgd;
++	pud_t *pud;
++	pmd_t *pmd;
++	pte_t *pte;
++	unsigned long pgd_next, pud_next, pmd_next;
++
++	if (addr >= end)
++		return;
++
++	/* Walk PGD */
++	pgd = pgd_offset(current->mm, addr);
++	do {
++		pgd_next = pgd_addr_end(addr, end);
++
++		if (pgd_none(*pgd) || pgd_bad(*pgd))
++			continue;
++
++		/* Walk PUD */
++		pud = pud_offset(pgd, addr);
++		do {
++			pud_next = pud_addr_end(addr, pgd_next);
++			if (pud_none(*pud) || pud_bad(*pud))
++				continue;
++
++			/* Walk PMD */
++			pmd = pmd_offset(pud, addr);
++			do {
++				pmd_next = pmd_addr_end(addr, pud_next);
++				if (pmd_none(*pmd) || pmd_bad(*pmd))
++					continue;
++
++				/* Walk PTE */
++				pte = pte_offset_map(pmd, addr);
++				do {
++					if (pte_none(*pte) ||
++					    !pte_present(*pte))
++						continue;
++
++					/* Clean + invalidate */
++					dmac_flush_range((const void *)addr,
++							 (const void *)
++							 (addr + PAGE_SIZE));
++
++				} while (pte++, addr +=
++					 PAGE_SIZE, addr != pmd_next);
++				pte_unmap(pte);
++
++			} while (pmd++, addr = pmd_next, addr != pud_next);
++
++		} while (pud++, addr = pud_next, addr != pgd_next);
++	} while (pgd++, addr = pgd_next, addr != end);
++}
++#endif
++
++static void *vc_sm_buffer_kmap_get(struct vc_sm_buffer *buffer)
++{
++	void *vaddr;
++
++	if (buffer->kmap_cnt) {
++		buffer->kmap_cnt++;
++		return buffer->vaddr;
++	}
++	vaddr = vc_sm_cma_map_kernel(buffer);
++	if (WARN_ONCE(!vaddr,
++		      "vcsm_cma_map_kernel should return ERR_PTR on error"))
++		return ERR_PTR(-EINVAL);
++	if (IS_ERR(vaddr))
++		return vaddr;
++	buffer->vaddr = vaddr;
++	buffer->kmap_cnt++;
++	return vaddr;
++}
++
++static void vc_sm_buffer_kmap_put(struct vc_sm_buffer *buffer)
++{
++	buffer->kmap_cnt--;
++	if (!buffer->kmap_cnt) {
++		//vc_sm_cma_unmap_kernel(buffer);
++		buffer->vaddr = NULL;
++	}
++}
++
++static struct sg_table *dup_sg_table(struct sg_table *table)
++{
++	struct sg_table *new_table;
++	int ret, i;
++	struct scatterlist *sg, *new_sg;
++
++	new_table = kzalloc(sizeof(*new_table), GFP_KERNEL);
++	if (!new_table)
++		return ERR_PTR(-ENOMEM);
++
++	ret = sg_alloc_table(new_table, table->nents, GFP_KERNEL);
++	if (ret) {
++		kfree(new_table);
++		return ERR_PTR(-ENOMEM);
++	}
++
++	new_sg = new_table->sgl;
++	for_each_sg(table->sgl, sg, table->nents, i) {
++		memcpy(new_sg, sg, sizeof(*sg));
++		sg->dma_address = 0;
++		new_sg = sg_next(new_sg);
++	}
++
++	return new_table;
++}
++
++static void free_duped_table(struct sg_table *table)
++{
++	sg_free_table(table);
++	kfree(table);
++}
++
++struct vc_sm_dma_buf_attachment {
++	struct device *dev;
++	struct sg_table *table;
++	struct list_head list;
++};
++
++static int vc_sm_dma_buf_attach(struct dma_buf *dmabuf, struct device *dev,
++				struct dma_buf_attachment *attachment)
++{
++	struct vc_sm_dma_buf_attachment *a;
++	struct sg_table *table;
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	a = kzalloc(sizeof(*a), GFP_KERNEL);
++	if (!a)
++		return -ENOMEM;
++
++	table = dup_sg_table(res->sg_table);
++	if (IS_ERR(table)) {
++		kfree(a);
++		return -ENOMEM;
++	}
++
++	a->table = table;
++	a->dev = dev;
++	INIT_LIST_HEAD(&a->list);
++
++	attachment->priv = a;
++
++	mutex_lock(&res->lock);
++	list_add(&a->list, &res->attachments);
++	mutex_unlock(&res->lock);
++	pr_debug("%s dmabuf %p attachment %p\n", __func__, dmabuf, attachment);
++
++	return 0;
++}
++
++static void vc_sm_dma_buf_detatch(struct dma_buf *dmabuf,
++				  struct dma_buf_attachment *attachment)
++{
++	struct vc_sm_dma_buf_attachment *a = attachment->priv;
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	pr_debug("%s dmabuf %p attachment %p\n", __func__, dmabuf, attachment);
++	free_duped_table(a->table);
++	mutex_lock(&res->lock);
++	list_del(&a->list);
++	mutex_unlock(&res->lock);
++
++	kfree(a);
++}
++
++static struct sg_table *vc_sm_map_dma_buf(struct dma_buf_attachment *attachment,
++					  enum dma_data_direction direction)
++{
++	struct vc_sm_dma_buf_attachment *a = attachment->priv;
++	struct sg_table *table;
++
++	table = a->table;
++
++	if (!dma_map_sg(attachment->dev, table->sgl, table->nents,
++			direction))
++		return ERR_PTR(-ENOMEM);
++
++	pr_debug("%s attachment %p\n", __func__, attachment);
++	return table;
++}
++
++static void vc_sm_unmap_dma_buf(struct dma_buf_attachment *attachment,
++				struct sg_table *table,
++				enum dma_data_direction direction)
++{
++	pr_debug("%s attachment %p\n", __func__, attachment);
++	dma_unmap_sg(attachment->dev, table->sgl, table->nents, direction);
++}
++
++static int vc_sm_dmabuf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++	struct sg_table *table = res->sg_table;
++	unsigned long addr = vma->vm_start;
++	unsigned long offset = vma->vm_pgoff * PAGE_SIZE;
++	struct scatterlist *sg;
++	int i;
++	int ret = 0;
++
++	pr_debug("%s dmabuf %p, res %p, vm_start %08lX\n", __func__, dmabuf,
++		 res, addr);
++/*	FIXME: How do we handle caching
++	if (res->res_cached == VMCS_SM_CACHE_HOST ||
++	    res->res_cached == VMCS_SM_CACHE_BOTH)
++		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
++*/
++	mutex_lock(&res->lock);
++
++	/* now map it to userspace */
++	for_each_sg(table->sgl, sg, table->nents, i) {
++		struct page *page = sg_page(sg);
++		unsigned long remainder = vma->vm_end - addr;
++		unsigned long len = sg->length;
++
++		if (offset >= sg->length) {
++			offset -= sg->length;
++			continue;
++		} else if (offset) {
++			page += offset / PAGE_SIZE;
++			len = sg->length - offset;
++			offset = 0;
++		}
++		len = min(len, remainder);
++		ret = remap_pfn_range(vma, addr, page_to_pfn(page), len,
++				      vma->vm_page_prot);
++		if (ret)
++			break;
++		addr += len;
++		if (addr >= vma->vm_end)
++			break;
++	}
++	mutex_unlock(&res->lock);
++
++	if (ret)
++		pr_err("%s: failure mapping buffer to userspace\n",
++		       __func__);
++
++	return ret;
++}
++
++static void vc_sm_dma_buf_release(struct dma_buf *dmabuf)
++{
++	struct vc_sm_buffer *buffer;
++
++	if (!dmabuf)
++		return;
++	buffer = (struct vc_sm_buffer *)dmabuf->priv;
++	pr_debug("%s dmabuf %p, buffer %p\n", __func__, dmabuf, buffer);
++
++	/* Keep the CMA allocation, but release the dma_buf object. */
++	vc_sm_clean_up_dmabuf(buffer);
++
++	vc_sm_release_resource(buffer, 0);
++}
++
++static void *vc_sm_dma_buf_kmap(struct dma_buf *dmabuf, unsigned long offset)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	return res->vaddr + offset * PAGE_SIZE;
++}
++
++static void vc_sm_dma_buf_kunmap(struct dma_buf *dmabuf, unsigned long offset,
++				 void *ptr)
++{
++}
++
++static int vc_sm_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
++					  enum dma_data_direction direction)
++{
++	struct vc_sm_buffer *res;
++	struct vc_sm_dma_buf_attachment *a;
++
++	if (!dmabuf)
++		return -EFAULT;
++
++	res = dmabuf->priv;
++	if (!res)
++		return -EFAULT;
++
++	mutex_lock(&res->lock);
++
++	list_for_each_entry(a, &res->attachments, list) {
++		dma_sync_sg_for_cpu(a->dev, a->table->sgl, a->table->nents,
++				    direction);
++	}
++	mutex_unlock(&res->lock);
++
++	return 0;
++}
++
++static int vc_sm_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
++					enum dma_data_direction direction)
++{
++	struct vc_sm_buffer *res;
++	struct vc_sm_dma_buf_attachment *a;
++
++	if (!dmabuf)
++		return -EFAULT;
++	res = dmabuf->priv;
++	if (!res)
++		return -EFAULT;
++
++	mutex_lock(&res->lock);
++	vc_sm_buffer_kmap_put(res);
++
++	list_for_each_entry(a, &res->attachments, list) {
++		dma_sync_sg_for_device(a->dev, a->table->sgl, a->table->nents,
++				       direction);
++	}
++	mutex_unlock(&res->lock);
++
++	return 0;
++}
++
++static const struct dma_buf_ops dma_buf_ops = {
++	.map_dma_buf = vc_sm_map_dma_buf,
++	.unmap_dma_buf = vc_sm_unmap_dma_buf,
++	.mmap = vc_sm_dmabuf_mmap,
++	.release = vc_sm_dma_buf_release,
++	.attach = vc_sm_dma_buf_attach,
++	.detach = vc_sm_dma_buf_detatch,
++	.begin_cpu_access = vc_sm_dma_buf_begin_cpu_access,
++	.end_cpu_access = vc_sm_dma_buf_end_cpu_access,
++	.map_atomic = vc_sm_dma_buf_kmap,
++	.unmap_atomic = vc_sm_dma_buf_kunmap,
++	.map = vc_sm_dma_buf_kmap,
++	.unmap = vc_sm_dma_buf_kunmap,
++};
++
++/* A set of dma_buf functions that call through to the exporter */
++static
++int vc_sm_import_dma_buf_attach(struct dma_buf *dmabuf, struct device *dev,
++				struct dma_buf_attachment *attachment)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	if (!res->import_dma_buf)
++		return -EINVAL;
++	return res->import_dma_buf->ops->attach(res->import_dma_buf, dev,
++						attachment);
++}
++
++static
++void vc_sm_import_dma_buf_detatch(struct dma_buf *dmabuf,
++				  struct dma_buf_attachment *attachment)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	if (!res->import_dma_buf)
++		return;
++	res->import_dma_buf->ops->detach(res->import_dma_buf, attachment);
++}
++
++static
++struct sg_table *vc_sm_import_map_dma_buf(struct dma_buf_attachment *attachment,
++					  enum dma_data_direction direction)
++{
++	struct vc_sm_buffer *res = attachment->dmabuf->priv;
++
++	if (!res->import_dma_buf)
++		return NULL;
++	return res->import_dma_buf->ops->map_dma_buf(attachment, direction);
++}
++
++static
++void vc_sm_import_unmap_dma_buf(struct dma_buf_attachment *attachment,
++				struct sg_table *table,
++				enum dma_data_direction direction)
++{
++	struct vc_sm_buffer *res = attachment->dmabuf->priv;
++
++	if (!res->import_dma_buf)
++		return;
++	res->import_dma_buf->ops->unmap_dma_buf(attachment, table, direction);
++}
++
++static
++int vc_sm_import_dmabuf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	pr_debug("%s: mmap dma_buf %p, res %p, imported db %p\n", __func__,
++		 dmabuf, res, res->import_dma_buf);
++	if (!res->import_dma_buf) {
++		pr_err("%s: mmap dma_buf %p- not an imported buffer\n",
++		       __func__, dmabuf);
++		return -EINVAL;
++	}
++	return res->import_dma_buf->ops->mmap(res->import_dma_buf, vma);
++}
++
++static
++void vc_sm_import_dma_buf_release(struct dma_buf *dmabuf)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	pr_debug("%s: Relasing dma_buf %p\n", __func__, dmabuf);
++	if (!res->import_dma_buf)
++		return;
++
++	/* Need to release imported handle */
++	vc_sm_clean_up_dmabuf(res);
++
++	vc_sm_release_resource(res, 0);
++}
++
++static
++void *vc_sm_import_dma_buf_kmap(struct dma_buf *dmabuf,
++				unsigned long offset)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	if (!res->import_dma_buf)
++		return NULL;
++	return res->import_dma_buf->ops->map_atomic(res->import_dma_buf,
++						      offset);
++}
++
++static
++void vc_sm_import_dma_buf_kunmap(struct dma_buf *dmabuf,
++				 unsigned long offset, void *ptr)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	if (!res->import_dma_buf)
++		return;
++	res->import_dma_buf->ops->unmap_atomic(res->import_dma_buf,
++					       offset, ptr);
++}
++
++static
++int vc_sm_import_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
++					  enum dma_data_direction direction)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	if (!res->import_dma_buf)
++		return -EINVAL;
++	return res->import_dma_buf->ops->begin_cpu_access(res->import_dma_buf,
++							    direction);
++}
++
++static
++int vc_sm_import_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
++					enum dma_data_direction direction)
++{
++	struct vc_sm_buffer *res = dmabuf->priv;
++
++	if (!res->import_dma_buf)
++		return -EINVAL;
++	return res->import_dma_buf->ops->end_cpu_access(res->import_dma_buf,
++							  direction);
++}
++
++static const struct dma_buf_ops dma_buf_import_ops = {
++	.map_dma_buf = vc_sm_import_map_dma_buf,
++	.unmap_dma_buf = vc_sm_import_unmap_dma_buf,
++	.mmap = vc_sm_import_dmabuf_mmap,
++	.release = vc_sm_import_dma_buf_release,
++	.attach = vc_sm_import_dma_buf_attach,
++	.detach = vc_sm_import_dma_buf_detatch,
++	.begin_cpu_access = vc_sm_import_dma_buf_begin_cpu_access,
++	.end_cpu_access = vc_sm_import_dma_buf_end_cpu_access,
++	.map_atomic = vc_sm_import_dma_buf_kmap,
++	.unmap_atomic = vc_sm_import_dma_buf_kunmap,
++	.map = vc_sm_import_dma_buf_kmap,
++	.unmap = vc_sm_import_dma_buf_kunmap,
++};
++
++static int vc_sm_cma_get_buffer(int fd, struct dma_buf **ret_dma_buf,
++				struct vc_sm_buffer **ret_buffer)
++{
++	struct dma_buf *dma_buf = NULL;
++	struct vc_sm_buffer *buffer = NULL;
++
++	dma_buf = dma_buf_get(fd);
++	if (IS_ERR_OR_NULL(dma_buf)) {
++		pr_err("[%s]: fd %d failed\n", __func__, fd);
++		return PTR_ERR(dma_buf);
++	}
++
++	if (dma_buf->ops == &dma_buf_ops ||
++	    dma_buf->ops == &dma_buf_import_ops) {
++		/* Our buffer - use priv field as reference */
++		*ret_dma_buf = dma_buf;
++		*ret_buffer = (struct vc_sm_buffer *)dma_buf->priv;
++
++		return 0;
++	} else {
++		/*
++		 * Not our buffer (this shouldn't happen as it should be mapped
++		 * via dma_buf_import_ops).
++		 * Can't use the priv field shortcut
++		 * to our handle. (ie it is an imported dma_buf from elsewhere)
++		 * Search the list of allocations to find dma_buf.
++		 */
++		int ret = -EINVAL;
++
++		pr_debug("[%s]: NOT our buffer %p.\n", __func__, dma_buf->priv);
++
++		if (!list_empty(&sm_state->buffer_list)) {
++			list_for_each_entry(buffer, &sm_state->buffer_list,
++					    global_buffer_list) {
++				if (buffer->dma_buf == dma_buf) {
++					*ret_dma_buf = dma_buf;
++					*ret_buffer = buffer;
++					ret = 0;
++					break;
++				}
++			}
++		}
++
++		if (ret)
++			dma_buf_put(dma_buf);
++
++		return ret;
++	}
++}
++
++static int vc_sm_cma_vpu_alloc(u32 size, uint32_t align, const char *name,
++			       struct vc_sm_buffer **ret_buffer)
++{
++	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
++	struct vc_sm_buffer *buffer = NULL;
++	int aligned_size;
++	int ret = 0;
++
++	/* Align to the user requested align */
++	aligned_size = ALIGN(size, align);
++	/* and then to a page boundary */
++	aligned_size = PAGE_ALIGN(aligned_size);
++
++	if (!aligned_size)
++		return -EINVAL;
++
++	/* Allocate local buffer to track this allocation. */
++	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
++	if (!buffer)
++		return -ENOMEM;
++
++	if (vc_sm_cma_buffer_allocate(sm_state->cma_heap, buffer,
++				      aligned_size)) {
++		pr_err("[%s]: cma alloc of %d bytes failed\n",
++		       __func__, aligned_size);
++		ret = -ENOMEM;
++		goto error;
++	}
++
++	pr_debug("[%s]: cma alloc of %d bytes success\n",
++		 __func__, aligned_size);
++
++	if (dma_map_sg(&sm_state->pdev->dev, buffer->sg_table->sgl,
++		       buffer->sg_table->nents, DMA_BIDIRECTIONAL) <= 0) {
++		pr_err("[%s]: dma_map_sg failed\n", __func__);
++		goto error;
++	}
++
++	mutex_init(&buffer->lock);
++	INIT_LIST_HEAD(&buffer->attachments);
++
++	memcpy(buffer->name, name,
++	       min(sizeof(buffer->name), strlen(name)));
++
++	exp_info.ops = &dma_buf_ops;
++	exp_info.size = aligned_size;
++	exp_info.flags = O_RDWR;
++	exp_info.priv = buffer;
++
++	buffer->dma_buf = dma_buf_export(&exp_info);
++	if (IS_ERR(buffer->dma_buf)) {
++		ret = PTR_ERR(buffer->dma_buf);
++		goto error;
++	}
++	buffer->dma_addr = (uint32_t)sg_dma_address(buffer->sg_table->sgl);
++	buffer->private = sm_state->vpu_allocs;
++
++	/* FIXME: I want to know this, but it's not been allocated as yet. */
++	buffer->vc_handle = 0;
++	buffer->vpu_state = VPU_MAPPED;
++	buffer->vpu_allocated = 1;
++	buffer->size = size;
++
++	vc_sm_add_resource(sm_state->vpu_allocs, buffer);
++
++	*ret_buffer = buffer;
++	return 0;
++error:
++	if (buffer)
++		vc_sm_destroy_buffer(buffer);
++	return ret;
++}
++
++/*
++ * Allocate a shared memory handle and block.
++ * Allocation is from CMA, and then imported into the VPU mappings.
++ */
++int vc_sm_cma_ioctl_alloc(struct vc_sm_privdata_t *private,
++			  struct vc_sm_cma_ioctl_alloc *ioparam)
++{
++	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
++	struct vc_sm_buffer *buffer = NULL;
++	struct vc_sm_import import = { 0 };
++	struct vc_sm_import_result result = { 0 };
++	struct dma_buf *dmabuf = NULL;
++	int aligned_size;
++	int ret = 0;
++	int status;
++	int fd = -1;
++
++	aligned_size = PAGE_ALIGN(ioparam->size);
++
++	if (!aligned_size)
++		return -EINVAL;
++
++	/* Allocate local buffer to track this allocation. */
++	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
++	if (!buffer) {
++		ret = -ENOMEM;
++		goto error;
++	}
++
++	if (vc_sm_cma_buffer_allocate(sm_state->cma_heap, buffer,
++				      aligned_size)) {
++		pr_err("[%s]: cma alloc of %d bytes failed\n",
++		       __func__, aligned_size);
++		kfree(buffer);
++		return -ENOMEM;
++	}
++
++	if (dma_map_sg(&sm_state->pdev->dev, buffer->sg_table->sgl,
++		       buffer->sg_table->nents, DMA_BIDIRECTIONAL) <= 0) {
++		pr_err("[%s]: dma_map_sg failed\n", __func__);
++		goto error;
++	}
++
++	import.type = //((ioparam->cached == VMCS_SM_CACHE_VC) ||
++		      // (ioparam->cached == VMCS_SM_CACHE_BOTH)) ?
++			//	VC_SM_ALLOC_CACHED :
++				VC_SM_ALLOC_NON_CACHED;
++	import.allocator = current->tgid;
++
++	if (*ioparam->name)
++		memcpy(import.name, ioparam->name, sizeof(import.name) - 1);
++	else
++		memcpy(import.name, VC_SM_RESOURCE_NAME_DEFAULT,
++		       sizeof(VC_SM_RESOURCE_NAME_DEFAULT));
++
++	mutex_init(&buffer->lock);
++	INIT_LIST_HEAD(&buffer->attachments);
++	buffer->ref_count++;
++	buffer->pid = current->tgid;
++	memcpy(buffer->name, import.name,
++	       min(sizeof(buffer->name), sizeof(import.name) - 1));
++
++	exp_info.ops = &dma_buf_ops;
++	exp_info.size = aligned_size;
++	exp_info.flags = O_RDWR;
++	exp_info.priv = buffer;
++
++	dmabuf = dma_buf_export(&exp_info);
++	if (IS_ERR(dmabuf)) {
++		ret = PTR_ERR(dmabuf);
++		goto error;
++	}
++	buffer->dma_buf = dmabuf;
++
++	import.addr = (uint32_t)sg_dma_address(buffer->sg_table->sgl);
++	import.size = aligned_size;
++	import.kernel_id = (uint32_t)buffer;
++
++	pr_debug("[%s]: alloced and exported \"%s\" data - type %u, addr %p, size %u, now to import to VC\n",
++		 __func__, import.name, import.type, (void *)import.addr,
++		 import.size);
++
++	/* Wrap it into a videocore buffer. */
++	status = vc_sm_vchi_import(sm_state->sm_handle, &import, &result,
++				   &sm_state->int_trans_id);
++	if (status == -EINTR) {
++		pr_debug("[%s]: requesting import memory action restart (trans_id: %u)\n",
++			 __func__, sm_state->int_trans_id);
++		ret = -ERESTARTSYS;
++		private->restart_sys = -EINTR;
++		private->int_action = VC_SM_MSG_TYPE_IMPORT;
++		goto error;
++	} else if (status || !result.res_handle) {
++		pr_err("[%s]: failed to import memory on videocore (status: %u, trans_id: %u)\n",
++		       __func__, status, sm_state->int_trans_id);
++		ret = -ENOMEM;
++		goto error;
++	}
++
++	/* Keep track of the buffer we created. */
++	buffer->private = private;
++	buffer->vc_handle = result.res_handle;
++	buffer->size = import.size;
++	buffer->dma_addr = import.addr;
++	buffer->vpu_state = VPU_MAPPED;
++
++	pr_debug("[%s]: imported to VC as handle %08X\n",
++		 __func__, buffer->vc_handle);
++
++	fd = dma_buf_fd(dmabuf, O_CLOEXEC);
++	if (fd < 0)
++		dma_buf_put(dmabuf);
++
++	vc_sm_add_resource(private, buffer);
++
++	pr_debug("[%s]: Added resource as fd %d, buffer %p, private %p, dma_addr %08X\n",
++		 __func__, fd, buffer, private, buffer->dma_addr);
++	/* We're done */
++	ioparam->handle = fd;
++	return 0;
++
++error:
++	if (buffer) {
++		pr_err("[%s]: something failed - cleanup\n", __func__);
++
++		vc_sm_destroy_buffer(buffer);
++	}
++	return ret;
++}
++
++/* Import a dma_buf to be shared with VC. */
++int
++vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
++				 struct vc_sm_cma_ioctl_import_dmabuf *ioparam,
++				 struct dma_buf *src_dma_buf,
++				 struct dma_buf **imported_buf)
++{
++	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
++	struct vc_sm_buffer *buffer = NULL;
++	struct vc_sm_import import = { };
++	struct vc_sm_import_result result = { };
++	struct dma_buf *dma_buf;
++	struct dma_buf_attachment *attach = NULL;
++	struct sg_table *sgt = NULL;
++	int ret = 0;
++	int status;
++
++	/* Setup our allocation parameters */
++	pr_debug("%s: Import fd %d / src_dma_buf %p\n", __func__,
++		 ioparam->dmabuf_fd, src_dma_buf);
++	if (src_dma_buf) {
++		get_dma_buf(src_dma_buf);
++		dma_buf = src_dma_buf;
++	} else {
++		dma_buf = dma_buf_get(ioparam->dmabuf_fd);
++	}
++
++	if (IS_ERR(dma_buf))
++		return PTR_ERR(dma_buf);
++
++	if (dma_buf->ops == &dma_buf_ops) {
++		/* Importing our own export - my head hurts. */
++		pr_err("%s: dma_buf ops are ours :-( %p\n", __func__, dma_buf->ops);
++		ret =  -EINVAL;
++		goto error;
++	}
++
++	attach = dma_buf_attach(dma_buf, &sm_state->pdev->dev);
++	if (IS_ERR(attach)) {
++		ret = PTR_ERR(attach);
++		goto error;
++	}
++
++	sgt = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
++	if (IS_ERR(sgt)) {
++		ret = PTR_ERR(sgt);
++		goto error;
++	}
++
++	/* Verify that the address block is contiguous */
++	if (sgt->nents != 1) {
++		ret = -ENOMEM;
++		goto error;
++	}
++
++	/* Allocate local buffer to track this allocation. */
++	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
++	if (!buffer) {
++		ret = -ENOMEM;
++		goto error;
++	}
++
++	import.type = //((ioparam->cached == VMCS_SM_CACHE_VC) ||
++		      // (ioparam->cached == VMCS_SM_CACHE_BOTH)) ?
++			//	VC_SM_ALLOC_CACHED :
++				VC_SM_ALLOC_NON_CACHED;
++	import.addr = (uint32_t)sg_dma_address(sgt->sgl);
++	import.size = sg_dma_len(sgt->sgl);
++	import.allocator = current->tgid;
++	import.kernel_id = (uint32_t)buffer;	//FIXME: 64 bit support needed.
++
++	if (*ioparam->name)
++		memcpy(import.name, ioparam->name, sizeof(import.name) - 1);
++	else
++		memcpy(import.name, VC_SM_RESOURCE_NAME_DEFAULT,
++		       sizeof(VC_SM_RESOURCE_NAME_DEFAULT));
++
++	pr_debug("[%s]: attempt to import \"%s\" data - type %u, addr %p, size %u\n",
++		 __func__, import.name, import.type, (void *)import.addr,
++		 import.size);
++
++	/* Allocate the videocore buffer. */
++	status = vc_sm_vchi_import(sm_state->sm_handle, &import, &result,
++				   &sm_state->int_trans_id);
++	if (status == -EINTR) {
++		pr_debug("[%s]: requesting import memory action restart (trans_id: %u)\n",
++			 __func__, sm_state->int_trans_id);
++		ret = -ERESTARTSYS;
++		private->restart_sys = -EINTR;
++		private->int_action = VC_SM_MSG_TYPE_IMPORT;
++		goto error;
++	} else if (status || !result.res_handle) {
++		pr_debug("[%s]: failed to import memory on videocore (status: %u, trans_id: %u)\n",
++			 __func__, status, sm_state->int_trans_id);
++		ret = -ENOMEM;
++		goto error;
++	}
++
++	mutex_init(&buffer->lock);
++	INIT_LIST_HEAD(&buffer->attachments);
++	buffer->ref_count++;
++	buffer->pid = current->tgid;
++	memcpy(buffer->name, import.name,
++	       min(sizeof(buffer->name), sizeof(import.name) - 1));
++
++	/* Keep track of the buffer we created. */
++	buffer->private = private;
++	buffer->vc_handle = result.res_handle;
++	buffer->size = import.size;
++	buffer->vpu_state = VPU_MAPPED;
++
++	buffer->import_dma_buf = dma_buf;
++
++	buffer->attach = attach;
++	buffer->sgt = sgt;
++	buffer->dma_addr = sg_dma_address(sgt->sgl);
++
++	/*
++	 * We're done - we need to export a new dmabuf chaining through most
++	 * functions, but enabling us to release our own internal references
++	 * here.
++	 */
++	exp_info.ops = &dma_buf_import_ops;
++	exp_info.size = import.size;
++	exp_info.flags = O_RDWR;
++	exp_info.priv = buffer;
++
++	buffer->dma_buf = dma_buf_export(&exp_info);
++	if (IS_ERR(buffer->dma_buf)) {
++		ret = PTR_ERR(buffer->dma_buf);
++		goto error;
++	}
++
++	vc_sm_add_resource(private, buffer);
++
++	*imported_buf = buffer->dma_buf;
++
++	return 0;
++
++error:
++	if (result.res_handle) {
++		struct vc_sm_free_t free = { result.res_handle, 0 };
++
++		vc_sm_vchi_free(sm_state->sm_handle, &free,
++				&sm_state->int_trans_id);
++	}
++	kfree(buffer);
++	if (sgt)
++		dma_buf_unmap_attachment(attach, sgt, DMA_BIDIRECTIONAL);
++	if (attach)
++		dma_buf_detach(dma_buf, attach);
++	dma_buf_put(dma_buf);
++	return ret;
++}
++
++/* Imports a dma_buf represented by a file descriptor to be shared with VC */
++int vc_sm_cma_ioctl_import_dmabuf(struct vc_sm_privdata_t *private,
++				  struct vc_sm_cma_ioctl_import_dmabuf *ioparam,
++			      struct dma_buf *src_dma_buf)
++{
++	struct dma_buf *imported_buf;
++	int ret;
++
++	ret = vc_sm_cma_import_dmabuf_internal(private, ioparam, src_dma_buf,
++					       &imported_buf);
++	if (!ret) {
++		struct vc_sm_buffer *buf =
++				(struct vc_sm_buffer *)imported_buf->priv;
++
++		ioparam->handle = dma_buf_fd(imported_buf, O_CLOEXEC);
++		ioparam->size = buf->size;
++	}
++	pr_debug("[%s]: Returning handle of %d\n", __func__, ioparam->handle);
++	return ret;
++}
++
++/* Handle control from host. */
++static long vc_sm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	int ret = 0;
++	unsigned int cmdnr = _IOC_NR(cmd);
++	struct vc_sm_privdata_t *file_data =
++	    (struct vc_sm_privdata_t *)file->private_data;
++
++	/* Validate we can work with this device. */
++	if (!sm_state || !file_data) {
++		pr_err("[%s]: invalid device\n", __func__);
++		return -EPERM;
++	}
++
++	pr_debug("[%s]: cmd %x tgid %u, owner %u\n", __func__, cmdnr,
++		 current->tgid, file_data->pid);
++
++	/* Action is a re-post of a previously interrupted action? */
++	if (file_data->restart_sys == -EINTR) {
++		struct vc_sm_action_clean_t action_clean;
++
++		pr_debug("[%s]: clean up of action %u (trans_id: %u) following EINTR\n",
++			 __func__, file_data->int_action,
++			file_data->int_trans_id);
++
++		action_clean.res_action = file_data->int_action;
++		action_clean.action_trans_id = sm_state->int_trans_id;
++
++		vc_sm_vchi_clean_up(sm_state->sm_handle, &action_clean);
++
++		file_data->restart_sys = 0;
++	}
++
++	/* Now process the command. */
++	switch (cmdnr) {
++		/* New memory allocation.
++		 */
++	case VC_SM_CMA_CMD_ALLOC:
++		{
++			struct vc_sm_cma_ioctl_alloc ioparam;
++
++			/* Get the parameter data. */
++			if (copy_from_user
++			    (&ioparam, (void *)arg, sizeof(ioparam)) != 0) {
++				pr_err("[%s]: failed to copy-from-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				goto out;
++			}
++
++			ret = vc_sm_cma_ioctl_alloc(file_data, &ioparam);
++			if (!ret &&
++			    (copy_to_user((void *)arg,
++					  &ioparam, sizeof(ioparam)) != 0)) {
++				pr_err("[%s]: failed to copy-to-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				//FIXME: Free the allocation.
++			}
++		}
++		break;
++
++	case VC_SM_CMA_CMD_IMPORT_DMABUF:
++		{
++			struct vc_sm_cma_ioctl_import_dmabuf ioparam;
++
++			/* Get the parameter data. */
++			if (copy_from_user
++			    (&ioparam, (void *)arg, sizeof(ioparam)) != 0) {
++				pr_err("[%s]: failed to copy-from-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				goto out;
++			}
++
++			ret = vc_sm_cma_ioctl_import_dmabuf(file_data, &ioparam,
++							    NULL);
++			if (!ret &&
++			    (copy_to_user((void *)arg,
++					  &ioparam, sizeof(ioparam)) != 0)) {
++				pr_err("[%s]: failed to copy-to-user for cmd %x\n",
++				       __func__, cmdnr);
++				//FIXME: release the resource
++				ret = -EFAULT;
++			}
++		}
++		break;
++
++#if TEMPORARILY_DISABLED
++//FIXME: Do we care about these from userspace?
++		/* Walk allocation on videocore, information shows up in the
++		 ** videocore log.
++		 */
++	case VC_SM_CMA_CMD_VC_WALK_ALLOC:
++		{
++			pr_debug("[%s]: invoking walk alloc\n", __func__);
++
++			if (vc_sm_vchi_walk_alloc(sm_state->sm_handle) != 0)
++				pr_err("[%s]: failed to walk-alloc on videocore\n",
++				       __func__);
++		}
++		break;
++		/* Walk mapping table on host, information shows up in the
++		 ** kernel log.
++		 */
++	case VC_SM_CMA_CMD_HOST_WALK_MAP:
++		{
++			/* Use pid of -1 to tell to walk the whole map. */
++			vmcs_sm_host_walk_map_per_pid(-1);
++		}
++		break;
++#endif
++#if TEMPORARILY_DISABLED
++//FIXME: Do we care about these from userspace?
++		/* Walk mapping table per process on host.  */
++	case VC_SM_CMA_CMD_HOST_WALK_PID_ALLOC:
++		{
++			struct vc_sm_cma_ioctl_walk ioparam;
++
++			/* Get parameter data.  */
++			if (copy_from_user(&ioparam,
++					   (void *)arg, sizeof(ioparam)) != 0) {
++				pr_err("[%s]: failed to copy-from-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				goto out;
++			}
++
++			vmcs_sm_host_walk_alloc(file_data);
++		}
++		break;
++
++		/* Walk allocation per process on host.  */
++	case VC_SM_CMA_CMD_HOST_WALK_PID_MAP:
++		{
++			struct vc_sm_cma_ioctl_walk ioparam;
++
++			/* Get parameter data. */
++			if (copy_from_user(&ioparam,
++					   (void *)arg, sizeof(ioparam)) != 0) {
++				pr_err("[%s]: failed to copy-from-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				goto out;
++			}
++
++			vmcs_sm_host_walk_map_per_pid(ioparam.pid);
++		}
++		break;
++#endif
++
++	case VC_SM_CMA_CMD_MAPPED_VC_HDL_FROM_HDL:
++	case VC_SM_CMA_CMD_MAPPED_VC_ADDR_FROM_HDL:
++		{
++			struct vc_sm_cma_ioctl_map ioparam;
++			struct dma_buf *dma_buf;
++			struct vc_sm_buffer *buf;
++
++			/* Get the parameter data. */
++			if (copy_from_user
++			    (&ioparam, (void *)arg, sizeof(ioparam)) != 0) {
++				pr_err("[%s]: failed to copy-from-user for cmd %x\n",
++				       __func__, cmdnr);
++				return -EFAULT;
++			}
++			pr_debug("[%s]: VC_FROM_xxx cmd %x - fd is %d\n",
++				 __func__, cmdnr, ioparam.fd);
++
++			ret = vc_sm_cma_get_buffer(ioparam.fd, &dma_buf, &buf);
++			if (ret)
++				return ret;
++
++			ioparam.handle = buf->vc_handle;
++			if (buf->sg_table) {
++				ioparam.addr = (uint32_t)sg_phys(buf->sg_table->sgl);
++			} else {
++				ioparam.addr = buf->dma_addr;
++				pr_debug("[%s]: VC_FROM_xxx %x, fd %d - no sg_table. Not our buffer/imported? Using dma_addr %08X, sgt %p",
++					 __func__, cmdnr, ioparam.fd, buf->dma_addr, buf->sgt);
++			}
++			ioparam.size = buf->size;
++			dma_buf_put(dma_buf);
++			pr_debug("[%s]: VC_FROM_xxx %x, fd %d success\n", __func__, cmdnr, ioparam.fd);
++
++			if ((copy_to_user((void *)arg,
++					  &ioparam, sizeof(ioparam)) != 0)) {
++				pr_err("[%s]: failed to copy-to-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				//FIXME: Free the allocation.
++			}
++		}
++		break;
++
++		/* Flush the cache for a given mapping. */
++	case VC_SM_CMA_CMD_FLUSH:
++		{
++#if TEMPORARILY_DISABLED
++			//FIXME: Temporarily disable. Do we really need mm_vc_mem_phys_addr?
++			//should be able to flush via CMA calls
++			struct vc_sm_cma_ioctl_cache ioparam;
++
++			/* Get parameter data. */
++			if (copy_from_user(&ioparam,
++					   (void *)arg, sizeof(ioparam)) != 0) {
++				pr_err("[%s]: failed to copy-from-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				goto out;
++			}
++
++			/* Locate buffer from GUID. */
++			buffer =
++			    vc_sm_acquire_buffer(file_data, ioparam.handle);
++
++			if (buffer && buffer->res_cached) {
++				dma_addr_t phys_addr = 0;
++
++				phys_addr =
++				    (dma_addr_t)((uint32_t)
++						 buffer->res_base_mem &
++						 0x3FFFFFFF);
++				phys_addr += (dma_addr_t)mm_vc_mem_phys_addr;
++
++				/* L1 cache flush */
++				down_read(&current->mm->mmap_sem);
++				vcsm_vma_cache_clean_page_range((unsigned long)
++								ioparam.addr,
++								(unsigned long)
++								ioparam.addr +
++								ioparam.size);
++				up_read(&current->mm->mmap_sem);
++
++				/* L2 cache flush */
++				outer_clean_range(phys_addr,
++						  phys_addr +
++						  (size_t)ioparam.size);
++			} else if (!buffer) {
++				ret = -EINVAL;
++				goto out;
++			}
++
++			if (buffer)
++				vc_sm_release_resource(buffer, 0);
++#endif
++		}
++		break;
++
++		/* Invalidate the cache for a given mapping. */
++	case VC_SM_CMA_CMD_INVALID:
++		{
++#if TEMPORARILY_DISABLED
++			struct vc_sm_cma_ioctl_cache ioparam;
++
++			/* Get parameter data. */
++			if (copy_from_user(&ioparam,
++					   (void *)arg, sizeof(ioparam)) != 0) {
++				pr_err("[%s]: failed to copy-from-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				goto out;
++			}
++
++			/* Locate buffer from GUID. */
++			buffer =
++			    vc_sm_acquire_buffer(file_data, ioparam.handle);
++
++			if (buffer && buffer->res_cached) {
++				dma_addr_t phys_addr = 0;
++
++				phys_addr =
++				    (dma_addr_t)((uint32_t)
++						 buffer->res_base_mem &
++						 0x3FFFFFFF);
++				phys_addr += (dma_addr_t)mm_vc_mem_phys_addr;
++
++				/* L2 cache invalidate */
++				outer_inv_range(phys_addr,
++						phys_addr +
++						(size_t)ioparam.size);
++
++				/* L1 cache invalidate */
++				down_read(&current->mm->mmap_sem);
++				vcsm_vma_cache_clean_page_range((unsigned long)
++								ioparam.addr,
++								(unsigned long)
++								ioparam.addr +
++								ioparam.size);
++				up_read(&current->mm->mmap_sem);
++			} else if (!buffer) {
++				ret = -EINVAL;
++				goto out;
++			}
++
++			if (buffer)
++				vc_sm_release_resource(buffer, 0);
++#endif
++		}
++		break;
++
++	/* Flush/Invalidate the cache for a given mapping. */
++	case VC_SM_CMA_CMD_CLEAN_INVALID:
++		{
++#if TEMPORARILY_DISABLED
++			int i;
++			struct vc_sm_cma_ioctl_clean_invalid ioparam;
++
++			/* Get parameter data. */
++			if (copy_from_user(&ioparam,
++					   (void *)arg, sizeof(ioparam)) != 0) {
++				pr_err("[%s]: failed to copy-from-user for cmd %x\n",
++				       __func__, cmdnr);
++				ret = -EFAULT;
++				goto out;
++			}
++			for (i = 0; i < sizeof(ioparam.s) / sizeof(*ioparam.s); i++) {
++				switch (ioparam.s[i].cmd) {
++				default:
++				case 0:
++					break; /* NOOP */
++				case 1:	/* L1/L2 invalidate virtual range */
++				case 2: /* L1/L2 clean physical range */
++				case 3: /* L1/L2 clean+invalidate all */
++					/* Locate buffer from GUID. */
++					buffer =
++					    vc_sm_acquire_buffer(file_data, ioparam.s[i].handle);
++
++					if ((buffer) && buffer->res_cached) {
++						unsigned long base = ioparam.s[i].addr & ~(PAGE_SIZE - 1);
++						unsigned long end = (ioparam.s[i].addr + ioparam.s[i].size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
++
++						/* L1/L2 cache flush */
++						down_read(&current->mm->mmap_sem);
++						vcsm_vma_cache_clean_page_range(base, end);
++						up_read(&current->mm->mmap_sem);
++					} else if (!buffer) {
++						ret = -EINVAL;
++						goto out;
++					}
++
++					if (buffer)
++						vc_sm_release_resource(buffer, 0);
++
++					break;
++				}
++			}
++#endif
++		}
++		break;
++	/* Flush/Invalidate the cache for a given mapping. */
++	case VC_SM_CMA_CMD_CLEAN_INVALID2:
++		{
++#if TEMPORARILY_DISABLED
++				int i, j;
++				struct vc_sm_cma_ioctl_clean_invalid2 ioparam;
++				struct vc_sm_cma_ioctl_clean_invalid_block *block = NULL;
++
++				/* Get parameter data. */
++				if (copy_from_user(&ioparam,
++						   (void *)arg, sizeof(ioparam)) != 0) {
++					pr_err("[%s]: failed to copy-from-user header for cmd %x\n",
++					       __func__, cmdnr);
++					ret = -EFAULT;
++					goto out;
++				}
++				block = kmalloc(ioparam.op_count *
++						sizeof(struct vmcs_sm_ioctl_clean_invalid_block),
++						GFP_KERNEL);
++				if (!block) {
++					ret = -EFAULT;
++					goto out;
++				}
++				if (copy_from_user(block,
++						   (void *)(arg + sizeof(ioparam)), ioparam.op_count * sizeof(struct vc_sm_cma_ioctl_clean_invalid_block)) != 0) {
++					pr_err("[%s]: failed to copy-from-user payload for cmd %x\n",
++					       __func__, cmdnr);
++					ret = -EFAULT;
++					goto out;
++				}
++
++				for (i = 0; i < ioparam.op_count; i++) {
++					const struct vc_sm_cma_ioctl_clean_invalid_block * const op = block + i;
++					cache_flush_op_fn * const op_fn = flushops[op->invalidate_mode & 3];
++
++					if ((op->invalidate_mode & ~3) != 0) {
++						ret = -EINVAL;
++						break;
++					}
++
++					if (op_fn == 0)
++						continue;
++
++					for (j = 0; j < op->block_count; ++j) {
++						const char * const base = (const char *)op->start_address + j * op->inter_block_stride;
++						const char * const end = base + op->block_size;
++
++						op_fn(base, end);
++					}
++				}
++				kfree(block);
++#endif
++			}
++		break;
++
++	default:
++		ret = -EINVAL;
++		break;
++	}
++
++out:
++	return ret;
++}
++
++/* FIXME: Pass a function pointer to this into vc_vchi_sm.c */
++void
++vc_sm_vpu_event(struct sm_instance *instance, struct vc_sm_result_t *reply,
++		int reply_len)
++{
++	switch (reply->trans_id & ~0x80000000) {
++	case VC_SM_MSG_TYPE_CLIENT_VERSION:
++	{
++		/* Acknowledge that the firmware supports the version command */
++		pr_debug("%s: firmware acked version msg. Require release cb\n",
++			 __func__);
++		sm_state->require_released_callback = true;
++	}
++	break;
++	case VC_SM_MSG_TYPE_RELEASED:
++	{
++		struct vc_sm_released *release = (struct vc_sm_released *)reply;
++		struct vc_sm_buffer *buffer =
++				(struct vc_sm_buffer *)release->kernel_id;
++
++		/*
++		 * FIXME: Need to check buffer is still valid and allocated
++		 * before continuing
++		 */
++		pr_debug("%s: Released addr %08x, size %u, id %08X, mem_handle %08X\n",
++			 __func__, release->addr, release->size,
++			 release->kernel_id, release->vc_handle);
++		buffer->vc_handle = 0;
++		buffer->vpu_state = VPU_NOT_MAPPED;
++		if (buffer->vpu_allocated)
++			dma_buf_put(buffer->dma_buf);
++
++		vc_sm_release_resource(buffer, 0);
++	}
++	break;
++	case VC_SM_MSG_TYPE_VC_MEM_REQUEST:
++	{
++		struct vc_sm_buffer *buffer = NULL;
++		struct vc_sm_vc_mem_request *req =
++					(struct vc_sm_vc_mem_request *)reply;
++		struct vc_sm_vc_mem_request_result reply;
++		int ret;
++
++		pr_debug("%s: Request %u bytes of memory, align %d name %s, trans_id %08x\n",
++			 __func__, req->size, req->align, req->name,
++			 req->trans_id);
++		ret = vc_sm_cma_vpu_alloc(req->size, req->align, req->name,
++					  &buffer);
++
++		reply.trans_id = req->trans_id;
++		if (!ret) {
++			reply.addr = buffer->dma_addr;
++			reply.kernel_id = (uint32_t)buffer;
++			pr_debug("%s: Allocated resource buffer %p, addr %pad\n",
++				 __func__, buffer, &buffer->dma_addr);
++		} else {
++			pr_err("%s: Allocation failed\n", __func__);
++			reply.addr = 0;
++			reply.kernel_id = 0;
++		}
++		vc_sm_vchi_client_vc_mem_req_reply(sm_state->sm_handle, &reply,
++						   &sm_state->int_trans_id);
++		break;
++	}
++	break;
++	default:
++		pr_err("%s: Unknown vpu cmd %X\n", __func__, reply->trans_id);
++		break;
++	}
++}
++
++/* Device operations that we managed in this driver. */
++static const struct file_operations vc_sm_ops = {
++	.owner = THIS_MODULE,
++	.unlocked_ioctl = vc_sm_ioctl,
++	.open = vc_sm_cma_open,
++	.release = vc_sm_cma_release,
++};
++
++/* Videocore connected.  */
++static void vc_sm_connected_init(void)
++{
++	int ret;
++	VCHI_INSTANCE_T vchi_instance;
++	VCHI_CONNECTION_T *vchi_connection = NULL;
++	struct vc_sm_version version;
++	struct vc_sm_result_t version_result;
++
++	pr_info("[%s]: start\n", __func__);
++
++	if (vc_sm_cma_add_heaps(&sm_state->cma_heap) ||
++	    !sm_state->cma_heap) {
++		pr_err("[%s]: failed to initialise CMA heaps\n",
++		       __func__);
++		ret = -EIO;
++		goto err_free_mem;
++	}
++
++	/*
++	 * Initialize and create a VCHI connection for the shared memory service
++	 * running on videocore.
++	 */
++	ret = vchi_initialise(&vchi_instance);
++	if (ret) {
++		pr_err("[%s]: failed to initialise VCHI instance (ret=%d)\n",
++		       __func__, ret);
++
++		ret = -EIO;
++		goto err_free_mem;
++	}
++
++	ret = vchi_connect(NULL, 0, vchi_instance);
++	if (ret) {
++		pr_err("[%s]: failed to connect VCHI instance (ret=%d)\n",
++		       __func__, ret);
++
++		ret = -EIO;
++		goto err_free_mem;
++	}
++
++	/* Initialize an instance of the shared memory service. */
++	sm_state->sm_handle =
++	    vc_sm_vchi_init(vchi_instance, &vchi_connection, 1);
++	if (!sm_state->sm_handle) {
++		pr_err("[%s]: failed to initialize shared memory service\n",
++		       __func__);
++
++		ret = -EPERM;
++		goto err_free_mem;
++	}
++
++	/* Create a debug fs directory entry (root). */
++	sm_state->dir_root = debugfs_create_dir(VC_SM_DIR_ROOT_NAME, NULL);
++	if (!sm_state->dir_root) {
++		pr_err("[%s]: failed to create \'%s\' directory entry\n",
++		       __func__, VC_SM_DIR_ROOT_NAME);
++
++		ret = -EPERM;
++		goto err_stop_sm_service;
++	}
++
++	sm_state->dir_state.show = &vc_sm_cma_global_state_show;
++	sm_state->dir_state.dir_entry =
++		debugfs_create_file(VC_SM_STATE, 0444, sm_state->dir_root,
++				    &sm_state->dir_state,
++				    &vc_sm_cma_debug_fs_fops);
++#if TEMPORARILY_DISABLED
++	sm_state->dir_stats.show = &vc_sm_global_statistics_show;
++	sm_state->dir_stats.dir_entry =
++		debugfs_create_file(VC_SM_STATS, 0444, sm_state->dir_root,
++				    &sm_state->dir_stats, &vc_sm_debug_fs_fops);
++
++	/* Create the proc entry children. */
++	sm_state->dir_alloc =
++		debugfs_create_dir(VC_SM_DIR_ALLOC_NAME, sm_state->dir_root);
++#endif
++	/* Create a shared memory device. */
++	sm_state->dev.minor = MISC_DYNAMIC_MINOR;
++	sm_state->dev.name = DEVICE_NAME;
++	sm_state->dev.fops = &vc_sm_ops;
++	sm_state->dev.parent = NULL;
++	ret = misc_register(&sm_state->dev);
++	if (ret) {
++		pr_err("vcsm-cma: failed to register misc device.\n");
++		goto err_remove_debugfs;
++	}
++
++	INIT_LIST_HEAD(&sm_state->buffer_list);
++
++	sm_state->data_knl = vc_sm_cma_create_priv_data(0);
++	if (!sm_state->data_knl) {
++		pr_err("[%s]: failed to create kernel private data tracker\n",
++		       __func__);
++		goto err_remove_shared_memory;
++	}
++	sm_state->vpu_allocs = vc_sm_cma_create_priv_data(0);
++	if (!sm_state->vpu_allocs) {
++		pr_err("[%s]: failed to create vpu_alloc private data tracker\n",
++		       __func__);
++		goto err_remove_shared_memory;
++	}
++
++	ret = vc_sm_vchi_client_version(sm_state->sm_handle, &version,
++					&version_result,
++					&sm_state->int_trans_id);
++	if (ret) {
++		pr_err("[%s]: Failed to send version request %d\n", __func__,
++		       ret);
++	}
++
++	/* Done! */
++	sm_inited = 1;
++	pr_info("[%s]: installed successfully\n", __func__);
++	return;
++
++err_remove_shared_memory:
++	misc_deregister(&sm_state->dev);
++err_remove_debugfs:
++	debugfs_remove_recursive(sm_state->dir_root);
++err_stop_sm_service:
++	vc_sm_vchi_stop(&sm_state->sm_handle);
++err_free_mem:
++	kfree(sm_state);
++	pr_info("[%s]: failed, ret %d\n", __func__, ret);
++}
++
++/* Driver loading. */
++static int bcm2835_vc_sm_cma_probe(struct platform_device *pdev)
++{
++	pr_info("vc-sm: Videocore shared memory driver\n");
++
++	sm_state = kzalloc(sizeof(*sm_state), GFP_KERNEL);
++	if (!sm_state)
++		return -ENOMEM;
++	sm_state->pdev = pdev;
++	mutex_init(&sm_state->map_lock);
++
++	vchiq_add_connected_callback(vc_sm_connected_init);
++	return 0;
++}
++
++/* Driver unloading. */
++static int bcm2835_vc_sm_cma_remove(struct platform_device *pdev)
++{
++	pr_debug("[%s]: start\n", __func__);
++	if (sm_inited) {
++		/* Remove shared memory device. */
++		misc_deregister(&sm_state->dev);
++
++		/* Remove all proc entries. */
++		//debugfs_remove_recursive(sm_state->dir_root);
++
++		/* Stop the videocore shared memory service. */
++		vc_sm_vchi_stop(&sm_state->sm_handle);
++
++		/* Free the memory for the state structure. */
++		mutex_destroy(&sm_state->map_lock);
++		kfree(sm_state);
++	}
++
++	pr_debug("[%s]: end\n", __func__);
++	return 0;
++}
++
++#if defined(__KERNEL__)
++/* Allocate a shared memory handle and block. */
++int vc_sm_cma_alloc(struct vc_sm_cma_knl_alloc_t *alloc, int *handle)
++{
++	/* FIXME - needs implementing */
++	return -ENOMEM;
++}
++EXPORT_SYMBOL_GPL(vc_sm_cma_alloc);
++
++/* Get an internal resource handle mapped from the external one. */
++int vc_sm_cma_int_handle(int handle)
++{
++	struct dma_buf *dma_buf = (struct dma_buf *)handle;
++	struct vc_sm_buffer *res;
++
++	/* Validate we can work with this device. */
++	if (!sm_state || !handle) {
++		pr_err("[%s]: invalid input\n", __func__);
++		return 0;
++	}
++
++	res = (struct vc_sm_buffer *)dma_buf->priv;
++	return res->vc_handle;
++}
++EXPORT_SYMBOL_GPL(vc_sm_cma_int_handle);
++
++/* Free a previously allocated shared memory handle and block. */
++int vc_sm_cma_free(int handle)
++{
++	struct dma_buf *dma_buf = (struct dma_buf *)handle;
++
++	/* Validate we can work with this device. */
++	if (!sm_state || !handle) {
++		pr_err("[%s]: invalid input\n", __func__);
++		return -EPERM;
++	}
++
++	pr_err("%s: handle %d/dmabuf %p\n", __func__, handle, dma_buf);
++
++	dma_buf_put(dma_buf);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(vc_sm_cma_free);
++
++/* Lock a memory handle for use by kernel. */
++int vc_sm_cma_lock(int handle, enum vc_sm_lock_cache_mode mode,
++		   unsigned long *data)
++{
++	return -EINVAL;
++}
++EXPORT_SYMBOL_GPL(vc_sm_cma_lock);
++
++/* Unlock a memory handle in use by kernel. */
++int vc_sm_cma_unlock(int handle, int flush, int no_vc_unlock)
++{
++	return -EINVAL;
++}
++EXPORT_SYMBOL_GPL(vc_sm_cma_unlock);
++
++/* Map a shared memory region for use by kernel. */
++int vc_sm_cma_map(int handle, unsigned int sm_addr,
++		  enum vc_sm_lock_cache_mode mode, unsigned long *data)
++{
++	return -EINVAL;
++}
++EXPORT_SYMBOL_GPL(vc_sm_cma_map);
++
++/* Import a dmabuf to be shared with VC. */
++int vc_sm_cma_import_dmabuf(struct dma_buf *src_dmabuf, int *handle)
++{
++	struct vc_sm_cma_ioctl_import_dmabuf ioparam = { 0 };
++	struct dma_buf *new_dma_buf;
++	struct vc_sm_buffer *res;
++	int ret;
++
++	/* Validate we can work with this device. */
++	if (!sm_state || !src_dmabuf || !handle) {
++		pr_err("[%s]: invalid input\n", __func__);
++		return -EPERM;
++	}
++
++	ioparam.cached = 0;
++	strcpy(ioparam.name, "KRNL DMABUF");
++
++	ret = vc_sm_cma_import_dmabuf_internal(sm_state->data_knl, &ioparam,
++					       src_dmabuf, &new_dma_buf);
++
++	if (!ret) {
++		pr_err("%s: imported to ptr %p\n", __func__, new_dma_buf);
++		res = (struct vc_sm_buffer *)new_dma_buf->priv;
++		res->pid = 0;
++
++		/* Assign valid handle at this time.*/
++		*handle = (int)new_dma_buf;
++	} else {
++		/*
++		 * succeeded in importing the dma_buf, but then
++		 * failed to look it up again. How?
++		 * Release the fd again.
++		 */
++		pr_err("%s: imported vc_sm_cma_get_buffer failed %d\n",
++		       __func__, ret);
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(vc_sm_cma_import_dmabuf);
++
++/* Export a dmabuf */
++int vc_sm_cma_export_dmabuf(int handle, struct dma_buf **dmabuf)
++{
++	struct dma_buf *dma_buf = (struct dma_buf *)handle;
++
++	/* Validate we can work with this device. */
++	if (!sm_state || !handle) {
++		pr_err("[%s]: invalid input\n", __func__);
++		return -EPERM;
++	}
++
++	pr_err("%s: handle %d/dmabuf %p\n", __func__, handle, dma_buf);
++
++	/* Increment ref count for this dma_buf. */
++	get_dma_buf(dma_buf);
++
++	*dmabuf = dma_buf;
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(vc_sm_cma_export_dmabuf);
++#endif
++
++/*
++ *   Register the driver with device tree
++ */
++
++static const struct of_device_id bcm2835_vc_sm_cma_of_match[] = {
++	{.compatible = "raspberrypi,bcm2835-vc-sm-cma",},
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, bcm2835_vcsm_cma_of_match);
++
++static struct platform_driver bcm2835_vcsm_cma_driver = {
++	.probe = bcm2835_vc_sm_cma_probe,
++	.remove = bcm2835_vc_sm_cma_remove,
++	.driver = {
++		   .name = DRIVER_NAME,
++		   .owner = THIS_MODULE,
++		   .of_match_table = bcm2835_vc_sm_cma_of_match,
++		   },
++};
++
++module_platform_driver(bcm2835_vcsm_cma_driver);
++
++MODULE_AUTHOR("Dave Stevenson");
++MODULE_DESCRIPTION("VideoCore CMA Shared Memory Driver");
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_sm.h b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.h
+new file mode 100644
+index 000000000000..346389f09fe5
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.h
+@@ -0,0 +1,219 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * VideoCore Shared Memory driver using CMA.
++ *
++ * Copyright: 2018, Raspberry Pi (Trading) Ltd
++ *
++ */
++
++#ifndef VC_SM_H
++#define VC_SM_H
++
++#include <linux/device.h>
++#include <linux/dma-direction.h>
++#include <linux/kref.h>
++#include <linux/mm_types.h>
++#include <linux/mutex.h>
++#include <linux/rbtree.h>
++#include <linux/sched.h>
++#include <linux/shrinker.h>
++#include <linux/types.h>
++#include <linux/miscdevice.h>
++
++/* Statistics tracked per resource and globally. */
++enum sm_stats_t {
++	/* Attempt. */
++	ALLOC,
++	FREE,
++	LOCK,
++	UNLOCK,
++	MAP,
++	FLUSH,
++	INVALID,
++	IMPORT,
++	EXPORT,
++
++	END_ATTEMPT,
++
++	/* Failure. */
++	ALLOC_FAIL,
++	FREE_FAIL,
++	LOCK_FAIL,
++	UNLOCK_FAIL,
++	MAP_FAIL,
++	FLUSH_FAIL,
++	INVALID_FAIL,
++	IMPORT_FAIL,
++	EXPORT_FAIL,
++
++	END_ALL,
++
++};
++
++/**
++ * struct vc_sm_heap - represents a heap in the system
++ * @node:		rb node to put the heap on the device's tree of heaps
++ * @dev:		back pointer to the vc_sm_device
++ * @type:		type of heap
++ * @ops:		ops struct as above
++ * @flags:		flags
++ * @id:			id of heap, also indicates priority of this heap when
++ *			allocating.  These are specified by platform data and
++ *			MUST be unique
++ * @name:		used for debugging
++ * @shrinker:		a shrinker for the heap
++ * @free_list:		free list head if deferred free is used
++ * @free_list_size	size of the deferred free list in bytes
++ * @lock:		protects the free list
++ * @waitqueue:		queue to wait on from deferred free thread
++ * @task:		task struct of deferred free thread
++ * @debug_show:		called when heap debug file is read to add any
++ *			heap specific debug info to output
++ *
++ * Represents a pool of memory from which buffers can be made.  In some
++ * systems the only heap is regular system memory allocated via vmalloc.
++ * On others, some blocks might require large physically contiguous buffers
++ * that are allocated from a specially reserved heap.
++ */
++struct vc_sm_heap {
++	struct plist_node node;
++	struct vc_sm_device *dev;
++	struct vc_sm_heap_ops *ops;
++	unsigned long flags;
++	unsigned int id;
++	const char *name;
++	struct shrinker shrinker;
++	struct list_head free_list;
++	size_t free_list_size;
++	spinlock_t free_lock;
++	wait_queue_head_t waitqueue;
++	struct task_struct *task;
++
++	int (*debug_show)(struct vc_sm_heap *heap, struct seq_file *, void *);
++};
++
++#define VC_SM_MAX_NAME_LEN 32
++
++enum vc_sm_vpu_mapping_state {
++	VPU_NOT_MAPPED,
++	VPU_MAPPED,
++	VPU_UNMAPPING
++};
++
++struct vc_sm_buffer {
++	struct list_head global_buffer_list;	/* Global list of buffers. */
++
++	unsigned long flags;
++	unsigned long private_flags;
++	size_t size;
++	void *priv_virt;
++	struct mutex lock;
++	int kmap_cnt;
++	void *vaddr;
++	struct sg_table *sg_table;
++	struct list_head attachments;
++
++	char name[VC_SM_MAX_NAME_LEN];
++	u32 ref_count;	/* Ref count for this buffer. */
++	enum vc_sm_vpu_mapping_state vpu_state;
++	int vpu_allocated;	/*
++				 * The VPU made this allocation. Release the
++				 * local dma_buf when the VPU releases the
++				 * resource.
++				 */
++
++	u32 vc_handle;	/* VideoCore handle for this buffer */
++
++	pid_t pid;		/* PID owning that resource. */
++	u32 lock_count;	/* Lock count for this resource. */
++
++	void *res_base_mem;	/* Resource base memory address. */
++
++	struct cma *cma_heap;
++
++	/* DMABUF related fields */
++	struct dma_buf *import_dma_buf;
++	struct dma_buf *dma_buf;
++	struct dma_buf_attachment *attach;
++	struct sg_table *sgt;
++	dma_addr_t dma_addr;
++
++	struct vc_sm_privdata_t *private;
++	bool map;		/* whether to map pages up front */
++};
++
++void vc_sm_buffer_destroy(struct vc_sm_buffer *buffer);
++
++/**
++ * struct vc_sm_device - the metadata of the vc_sm device node
++ * @dev:		the actual misc device
++ * @buffers:		an rb tree of all the existing buffers
++ * @buffer_lock:	lock protecting the tree of buffers
++ * @lock:		rwsem protecting the tree of heaps and clients
++ */
++struct vc_sm_device {
++	struct miscdevice dev;
++	struct rb_root buffers;
++	struct mutex buffer_lock;
++	struct rw_semaphore lock;
++	struct plist_head heaps;
++	struct dentry *debug_root;
++	int heap_cnt;
++};
++
++/**
++ * struct vc_sm_heap_ops - ops to operate on a given heap
++ * @allocate:		allocate memory
++ * @free:		free memory
++ * @map_kernel		map memory to the kernel
++ * @unmap_kernel	unmap memory to the kernel
++ * @map_user		map memory to userspace
++ *
++ * allocate, phys, and map_user return 0 on success, -errno on error.
++ * map_dma and map_kernel return pointer on success, ERR_PTR on
++ * error.
++ */
++struct vc_sm_heap_ops {
++	int (*allocate)(struct vc_sm_heap *heap,
++			struct vc_sm_buffer *buffer, unsigned long len,
++			unsigned long flags);
++	void (*free)(struct vc_sm_buffer *buffer);
++	void * (*map_kernel)(struct vc_sm_heap *heap, struct vc_sm_buffer *buffer);
++	void (*unmap_kernel)(struct vc_sm_heap *heap, struct vc_sm_buffer *buffer);
++	int (*map_user)(struct vc_sm_heap *mapper, struct vc_sm_buffer *buffer,
++			struct vm_area_struct *vma);
++	int (*shrink)(struct vc_sm_heap *heap, gfp_t gfp_mask, int nr_to_scan);
++};
++
++/**
++ * vc_sm_buffer_fault_user_mappings - fault in user mappings of this buffer
++ * @buffer:		buffer
++ *
++ * indicates whether userspace mappings of this buffer will be faulted
++ * in, this can affect how buffers are allocated from the heap.
++ */
++bool vc_sm_buffer_fault_user_mappings(struct vc_sm_buffer *buffer);
++
++/**
++ * vc_sm_device_add_heap - adds a heap to the vc_sm device
++ * @heap:		the heap to add
++ */
++void vc_sm_device_add_heap(struct vc_sm_heap *heap);
++
++/**
++ * some helpers for common operations on buffers using the sg_table
++ * and vaddr fields
++ */
++//void *vc_sm_heap_map_kernel(struct vc_sm_heap *heap, struct vc_sm_buffer *buffer);
++//void vc_sm_heap_unmap_kernel(struct vc_sm_heap *heap, struct vc_sm_buffer *buffer);
++//int vc_sm_heap_map_user(struct vc_sm_heap *heap, struct vc_sm_buffer *buffer,
++			//struct vm_area_struct *vma);
++//int vc_sm_heap_buffer_zero(struct vc_sm_buffer *buffer);
++//int vc_sm_heap_pages_zero(struct page *page, size_t size, pgprot_t pgprot);
++
++//static long vc_sm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
++
++int vc_sm_query_heaps(struct vc_sm_heap *query);
++
++#endif
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_sm_cma.c b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_cma.c
+new file mode 100644
+index 000000000000..c123d1fa3de3
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_cma.c
+@@ -0,0 +1,175 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * VideoCore Shared Memory CMA allocator
++ *
++ * Copyright: 2018, Raspberry Pi (Trading) Ltd
++ *
++ * Based on the Android ION allocator
++ * Copyright (C) Linaro 2012
++ * Author: <benjamin.gaignard@linaro.org> for ST-Ericsson.
++ *
++ */
++
++#include <linux/slab.h>
++#include <linux/errno.h>
++#include <linux/err.h>
++#include <linux/cma.h>
++#include <linux/scatterlist.h>
++
++#include "vc_sm.h"
++#include "vc_sm_cma.h"
++
++/* CMA heap operations functions */
++int vc_sm_cma_buffer_allocate(struct cma *cma_heap, struct vc_sm_buffer *buffer,
++			      unsigned long len)
++{
++	/* len should already be page aligned */
++	unsigned long num_pages = len / PAGE_SIZE;
++	struct sg_table *table;
++	struct page *pages;
++	int ret;
++
++	pages = cma_alloc(cma_heap, num_pages, 0, GFP_KERNEL);
++	if (!pages)
++		return -ENOMEM;
++
++	table = kmalloc(sizeof(*table), GFP_KERNEL);
++	if (!table)
++		goto err;
++
++	ret = sg_alloc_table(table, 1, GFP_KERNEL);
++	if (ret)
++		goto free_mem;
++
++	sg_set_page(table->sgl, pages, len, 0);
++
++	buffer->priv_virt = pages;
++	buffer->sg_table = table;
++	buffer->cma_heap = cma_heap;
++	return 0;
++
++free_mem:
++	kfree(table);
++err:
++	cma_release(cma_heap, pages, num_pages);
++	return -ENOMEM;
++}
++
++void vc_sm_cma_buffer_free(struct vc_sm_buffer *buffer)
++{
++	struct cma *cma_heap = buffer->cma_heap;
++	struct page *pages = buffer->priv_virt;
++
++	/* release memory */
++	if (cma_heap)
++		cma_release(cma_heap, pages, buffer->size / PAGE_SIZE);
++	/* release sg table */
++	if (buffer->sg_table) {
++		sg_free_table(buffer->sg_table);
++		kfree(buffer->sg_table);
++	}
++}
++
++void *vc_sm_cma_map_kernel(struct vc_sm_buffer *buffer)
++{
++	struct scatterlist *sg;
++	int i, j;
++	void *vaddr = NULL;
++	pgprot_t pgprot;
++	struct sg_table *table = buffer->sg_table;
++	int npages = PAGE_ALIGN(buffer->size) / PAGE_SIZE;
++	struct page **pages = vmalloc(sizeof(struct page *) * npages);
++	struct page **tmp = pages;
++
++	if (!pages)
++		return NULL;
++
++//	if (buffer->flags & ION_FLAG_CACHED)
++//		pgprot = PAGE_KERNEL;
++//	else
++		pgprot = pgprot_writecombine(PAGE_KERNEL);
++
++	for_each_sg(table->sgl, sg, table->nents, i) {
++		int npages_this_entry = PAGE_ALIGN(sg->length) / PAGE_SIZE;
++		struct page *page = sg_page(sg);
++
++		WARN_ON(i >= npages);
++		if (i >= npages)
++			break;
++		for (j = 0; j < npages_this_entry; j++)
++			*(tmp++) = page++;
++	}
++	if (i < npages)
++		vaddr = vmap(pages, npages, VM_MAP, pgprot);
++	vfree(pages);
++
++	if (!vaddr)
++		return ERR_PTR(-ENOMEM);
++
++	return vaddr;
++}
++
++void vc_sm_cma_unmap_kernel(struct vc_sm_buffer *buffer)
++{
++	vunmap(buffer->vaddr);
++}
++
++int vc_sm_cma_map_user(struct vc_sm_buffer *buffer,
++		       struct vm_area_struct *vma)
++{
++	struct sg_table *table = buffer->sg_table;
++	unsigned long addr = vma->vm_start;
++	unsigned long offset = vma->vm_pgoff * PAGE_SIZE;
++	struct scatterlist *sg;
++	int i;
++	int ret;
++
++	for_each_sg(table->sgl, sg, table->nents, i) {
++		struct page *page = sg_page(sg);
++		unsigned long remainder = vma->vm_end - addr;
++		unsigned long len = sg->length;
++
++		if (offset >= sg->length) {
++			offset -= sg->length;
++			continue;
++		} else if (offset) {
++			page += offset / PAGE_SIZE;
++			len = sg->length - offset;
++			offset = 0;
++		}
++		len = min(len, remainder);
++		ret = remap_pfn_range(vma, addr, page_to_pfn(page), len,
++				      vma->vm_page_prot);
++		if (ret)
++			return ret;
++		addr += len;
++		if (addr >= vma->vm_end)
++			return 0;
++	}
++	return 0;
++}
++
++int __vc_sm_cma_add_heaps(struct cma *cma, void *priv)
++{
++	struct cma **heap = (struct cma **)priv;
++	const char *name = cma_get_name(cma);
++
++	if (!(*heap)) {
++		pr_debug("%s: Adding cma heap %s (start %lX, size %lu) for use by vcsm\n",
++			 __func__, name, (unsigned long int)cma_get_base(cma),
++			 cma_get_size(cma));
++		*heap = cma;
++	} else {
++		pr_err("%s: Ignoring heap %s as already set\n",
++		       __func__, name);
++	}
++
++	return 0;
++}
++
++int vc_sm_cma_add_heaps(struct cma **cma_heap)
++{
++	cma_for_each_area(__vc_sm_cma_add_heaps, cma_heap);
++	return 0;
++}
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_sm_cma.h b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_cma.h
+new file mode 100644
+index 000000000000..5dc3dc12d23c
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_cma.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * VideoCore Shared Memory CMA allocator
++ *
++ * Copyright: 2018, Raspberry Pi (Trading) Ltd
++ *
++ * Based on the Android ION allocator
++ * Copyright (C) Linaro 2012
++ * Author: <benjamin.gaignard@linaro.org> for ST-Ericsson.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++int vc_sm_cma_buffer_allocate(struct cma *cma_heap, struct vc_sm_buffer *buffer,
++			      unsigned long len);
++void vc_sm_cma_buffer_free(struct vc_sm_buffer *buffer);
++void *vc_sm_cma_map_kernel(struct vc_sm_buffer *buffer);
++void vc_sm_cma_unmap_kernel(struct vc_sm_buffer *buffer);
++int vc_sm_cma_map_user(struct vc_sm_buffer *buffer,
++		       struct vm_area_struct *vma);
++
++int vc_sm_cma_add_heaps(struct cma **cma_heap);
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_sm_defs.h b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_defs.h
+new file mode 100644
+index 000000000000..1b038de85fa2
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_defs.h
+@@ -0,0 +1,296 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * VideoCore Shared Memory CMA allocator
++ *
++ * Copyright: 2018, Raspberry Pi (Trading) Ltd
++ *
++ * Based on vc_sm_defs.h from the vmcs_sm driver Copyright Broadcom Corporation.
++ *
++ ****************************************************************************
++ */
++
++#ifndef __VC_SM_DEFS_H__INCLUDED__
++#define __VC_SM_DEFS_H__INCLUDED__
++
++/* FourCC code used for VCHI connection */
++#define VC_SM_SERVER_NAME MAKE_FOURCC("SMEM")
++
++/* Maximum message length */
++#define VC_SM_MAX_MSG_LEN (sizeof(union vc_sm_msg_union_t) + \
++	sizeof(struct vc_sm_msg_hdr_t))
++#define VC_SM_MAX_RSP_LEN (sizeof(union vc_sm_msg_union_t))
++
++/* Resource name maximum size */
++#define VC_SM_RESOURCE_NAME 32
++
++/*
++ * Version to be reported to the VPU
++ * VPU assumes 0 (aka 1) which does not require the released callback, nor
++ * expect the client to handle VC_MEM_REQUESTS.
++ * Version 2 requires the released callback, and must support VC_MEM_REQUESTS.
++ */
++#define VC_SM_PROTOCOL_VERSION	2
++
++enum vc_sm_msg_type {
++	/* Message types supported for HOST->VC direction */
++
++	/* Allocate shared memory block */
++	VC_SM_MSG_TYPE_ALLOC,
++	/* Lock allocated shared memory block */
++	VC_SM_MSG_TYPE_LOCK,
++	/* Unlock allocated shared memory block */
++	VC_SM_MSG_TYPE_UNLOCK,
++	/* Unlock allocated shared memory block, do not answer command */
++	VC_SM_MSG_TYPE_UNLOCK_NOANS,
++	/* Free shared memory block */
++	VC_SM_MSG_TYPE_FREE,
++	/* Resize a shared memory block */
++	VC_SM_MSG_TYPE_RESIZE,
++	/* Walk the allocated shared memory block(s) */
++	VC_SM_MSG_TYPE_WALK_ALLOC,
++
++	/* A previously applied action will need to be reverted */
++	VC_SM_MSG_TYPE_ACTION_CLEAN,
++
++	/*
++	 * Import a physical address and wrap into a MEM_HANDLE_T.
++	 * Release with VC_SM_MSG_TYPE_FREE.
++	 */
++	VC_SM_MSG_TYPE_IMPORT,
++	/*
++	 *Tells VC the protocol version supported by this client.
++	 * 2 supports the async/cmd messages from the VPU for final release
++	 * of memory, and for VC allocations.
++	 */
++	VC_SM_MSG_TYPE_CLIENT_VERSION,
++	/* Response to VC request for memory */
++	VC_SM_MSG_TYPE_VC_MEM_REQUEST_REPLY,
++
++	/*
++	 * Asynchronous/cmd messages supported for VC->HOST direction.
++	 * Signalled by setting the top bit in vc_sm_result_t trans_id.
++	 */
++
++	/*
++	 * VC has finished with an imported memory allocation.
++	 * Release any Linux reference counts on the underlying block.
++	 */
++	VC_SM_MSG_TYPE_RELEASED,
++	/* VC request for memory */
++	VC_SM_MSG_TYPE_VC_MEM_REQUEST,
++
++	VC_SM_MSG_TYPE_MAX
++};
++
++/* Type of memory to be allocated */
++enum vc_sm_alloc_type_t {
++	VC_SM_ALLOC_CACHED,
++	VC_SM_ALLOC_NON_CACHED,
++};
++
++/* Message header for all messages in HOST->VC direction */
++struct vc_sm_msg_hdr_t {
++	uint32_t type;
++	uint32_t trans_id;
++	uint8_t body[0];
++
++};
++
++/* Request to allocate memory (HOST->VC) */
++struct vc_sm_alloc_t {
++	/* type of memory to allocate */
++	enum vc_sm_alloc_type_t type;
++	/* byte amount of data to allocate per unit */
++	uint32_t base_unit;
++	/* number of unit to allocate */
++	uint32_t num_unit;
++	/* alignement to be applied on allocation */
++	uint32_t alignement;
++	/* identity of who allocated this block */
++	uint32_t allocator;
++	/* resource name (for easier tracking on vc side) */
++	char name[VC_SM_RESOURCE_NAME];
++
++};
++
++/* Result of a requested memory allocation (VC->HOST) */
++struct vc_sm_alloc_result_t {
++	/* Transaction identifier */
++	uint32_t trans_id;
++
++	/* Resource handle */
++	uint32_t res_handle;
++	/* Pointer to resource buffer */
++	uint32_t res_mem;
++	/* Resource base size (bytes) */
++	uint32_t res_base_size;
++	/* Resource number */
++	uint32_t res_num;
++
++};
++
++/* Request to free a previously allocated memory (HOST->VC) */
++struct vc_sm_free_t {
++	/* Resource handle (returned from alloc) */
++	uint32_t res_handle;
++	/* Resource buffer (returned from alloc) */
++	uint32_t res_mem;
++
++};
++
++/* Request to lock a previously allocated memory (HOST->VC) */
++struct vc_sm_lock_unlock_t {
++	/* Resource handle (returned from alloc) */
++	uint32_t res_handle;
++	/* Resource buffer (returned from alloc) */
++	uint32_t res_mem;
++
++};
++
++/* Request to resize a previously allocated memory (HOST->VC) */
++struct vc_sm_resize_t {
++	/* Resource handle (returned from alloc) */
++	uint32_t res_handle;
++	/* Resource buffer (returned from alloc) */
++	uint32_t res_mem;
++	/* Resource *new* size requested (bytes) */
++	uint32_t res_new_size;
++
++};
++
++/* Result of a requested memory lock (VC->HOST) */
++struct vc_sm_lock_result_t {
++	/* Transaction identifier */
++	uint32_t trans_id;
++
++	/* Resource handle */
++	uint32_t res_handle;
++	/* Pointer to resource buffer */
++	uint32_t res_mem;
++	/*
++	 * Pointer to former resource buffer if the memory
++	 * was reallocated
++	 */
++	uint32_t res_old_mem;
++
++};
++
++/* Generic result for a request (VC->HOST) */
++struct vc_sm_result_t {
++	/* Transaction identifier */
++	uint32_t trans_id;
++
++	int32_t success;
++
++};
++
++/* Request to revert a previously applied action (HOST->VC) */
++struct vc_sm_action_clean_t {
++	/* Action of interest */
++	enum vc_sm_msg_type res_action;
++	/* Transaction identifier for the action of interest */
++	uint32_t action_trans_id;
++
++};
++
++/* Request to remove all data associated with a given allocator (HOST->VC) */
++struct vc_sm_free_all_t {
++	/* Allocator identifier */
++	uint32_t allocator;
++};
++
++/* Request to import memory (HOST->VC) */
++struct vc_sm_import {
++	/* type of memory to allocate */
++	enum vc_sm_alloc_type_t type;
++	/* pointer to the VC (ie physical) address of the allocated memory */
++	uint32_t addr;
++	/* size of buffer */
++	uint32_t size;
++	/* opaque handle returned in RELEASED messages */
++	uint32_t kernel_id;
++	/* Allocator identifier */
++	uint32_t allocator;
++	/* resource name (for easier tracking on vc side) */
++	char     name[VC_SM_RESOURCE_NAME];
++};
++
++/* Result of a requested memory import (VC->HOST) */
++struct vc_sm_import_result {
++	/* Transaction identifier */
++	uint32_t trans_id;
++
++	/* Resource handle */
++	uint32_t res_handle;
++};
++
++/* Notification that VC has finished with an allocation (VC->HOST) */
++struct vc_sm_released {
++	/* cmd type / trans_id */
++	uint32_t cmd;
++
++	/* pointer to the VC (ie physical) address of the allocated memory */
++	uint32_t addr;
++	/* size of buffer */
++	uint32_t size;
++	/* opaque handle returned in RELEASED messages */
++	uint32_t kernel_id;
++	uint32_t vc_handle;
++};
++
++/*
++ * Client informing VC as to the protocol version it supports.
++ * >=2 requires the released callback, and supports VC asking for memory.
++ * Failure means that the firmware doesn't support this call, and therefore the
++ * client should either fail, or NOT rely on getting the released callback.
++ */
++struct vc_sm_version {
++	uint32_t version;
++};
++
++/* Request FROM VideoCore for some memory */
++struct vc_sm_vc_mem_request {
++	/* cmd type */
++	uint32_t cmd;
++
++	/* trans_id (from VPU) */
++	uint32_t trans_id;
++	/* size of buffer */
++	uint32_t size;
++	/* alignment of buffer */
++	uint32_t align;
++	/* resource name (for easier tracking) */
++	char     name[VC_SM_RESOURCE_NAME];
++};
++
++/* Response from the kernel to provide the VPU with some memory */
++struct vc_sm_vc_mem_request_result {
++	/* Transaction identifier for the VPU */
++	uint32_t trans_id;
++	/* pointer to the physical address of the allocated memory */
++	uint32_t addr;
++	/* opaque handle returned in RELEASED messages */
++	uint32_t kernel_id;
++};
++
++/* Union of ALL messages */
++union vc_sm_msg_union_t {
++	struct vc_sm_alloc_t alloc;
++	struct vc_sm_alloc_result_t alloc_result;
++	struct vc_sm_free_t free;
++	struct vc_sm_lock_unlock_t lock_unlock;
++	struct vc_sm_action_clean_t action_clean;
++	struct vc_sm_resize_t resize;
++	struct vc_sm_lock_result_t lock_result;
++	struct vc_sm_result_t result;
++	struct vc_sm_free_all_t free_all;
++	struct vc_sm_import import;
++	struct vc_sm_import_result import_result;
++	struct vc_sm_version version;
++	struct vc_sm_released released;
++	struct vc_sm_vc_mem_request vc_request;
++	struct vc_sm_vc_mem_request_result vc_request_result;
++};
++
++#endif /* __VC_SM_DEFS_H__INCLUDED__ */
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_sm_knl.h b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_knl.h
+new file mode 100644
+index 000000000000..36e00e202930
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_knl.h
+@@ -0,0 +1,64 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * VideoCore Shared Memory CMA allocator
++ *
++ * Copyright: 2018, Raspberry Pi (Trading) Ltd
++ *
++ */
++
++#ifndef __VC_SM_KNL_H__INCLUDED__
++#define __VC_SM_KNL_H__INCLUDED__
++
++#if !defined(__KERNEL__)
++#error "This interface is for kernel use only..."
++#endif
++
++/* Type of memory to be locked (ie mapped) */
++enum vc_sm_lock_cache_mode {
++	VC_SM_LOCK_CACHED,
++	VC_SM_LOCK_NON_CACHED,
++};
++
++/* Cache functions */
++#define VCSM_CACHE_OP_INV       0x01
++#define VCSM_CACHE_OP_CLEAN     0x02
++#define VCSM_CACHE_OP_FLUSH     0x03
++
++/* Request to allocate memory (HOST->VC) */
++struct vc_sm_cma_knl_alloc_t {
++	/* type of memory to allocate */
++	bool cached;
++	/* byte amount of data to allocate per unit */
++	u32 base_unit;
++	/* number of unit to allocate */
++	u32 num_unit;
++};
++
++/* Allocate a shared memory handle and block. */
++int vc_sm_cma_alloc(struct vc_sm_cma_knl_alloc_t *alloc, int *handle);
++
++/* Free a previously allocated shared memory handle and block. */
++int vc_sm_cma_free(int handle);
++
++/* Lock a memory handle for use by kernel. */
++int vc_sm_cma_lock(int handle, enum vc_sm_lock_cache_mode mode,
++		   unsigned long *data);
++
++/* Unlock a memory handle in use by kernel. */
++int vc_sm_cma_unlock(int handle, int flush, int no_vc_unlock);
++
++/* Get an internal resource handle mapped from the external one. */
++int vc_sm_cma_int_handle(int handle);
++
++/* Map a shared memory region for use by kernel. */
++int vc_sm_cma_map(int handle, unsigned int sm_addr,
++		  enum vc_sm_lock_cache_mode mode, unsigned long *data);
++
++/* Import a block of memory into the GPU space. */
++int vc_sm_cma_import_dmabuf(struct dma_buf *dmabuf, int *handle);
++
++/* Export a shared memory handle as a dmabuf */
++int vc_sm_cma_export_dmabuf(int handle, struct dma_buf **dmabuf);
++
++#endif /* __VC_SM_KNL_H__INCLUDED__ */
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_vchi_sm.c b/drivers/staging/vc04_services/vc-sm-cma/vc_vchi_sm.c
+new file mode 100644
+index 000000000000..6d1e5206f3a1
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_vchi_sm.c
+@@ -0,0 +1,548 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * VideoCore Shared Memory CMA allocator
++ *
++ * Copyright: 2018, Raspberry Pi (Trading) Ltd
++ * Copyright 2011-2012 Broadcom Corporation.  All rights reserved.
++ *
++ */
++
++/* ---- Include Files ----------------------------------------------------- */
++#include <linux/types.h>
++#include <linux/kernel.h>
++#include <linux/list.h>
++#include <linux/semaphore.h>
++#include <linux/mutex.h>
++#include <linux/slab.h>
++#include <linux/kthread.h>
++
++#include "vc_vchi_sm.h"
++
++#define VC_SM_VER  1
++#define VC_SM_MIN_VER 0
++
++/* ---- Private Constants and Types -------------------------------------- */
++
++/* Command blocks come from a pool */
++#define SM_MAX_NUM_CMD_RSP_BLKS 32
++
++struct sm_cmd_rsp_blk {
++	struct list_head head;	/* To create lists */
++	struct semaphore sema;	/* To be signaled when the response is there */
++
++	u16 id;
++	u16 length;
++
++	u8 msg[VC_SM_MAX_MSG_LEN];
++
++	uint32_t wait:1;
++	uint32_t sent:1;
++	uint32_t alloc:1;
++
++};
++
++struct sm_instance {
++	u32 num_connections;
++	VCHI_SERVICE_HANDLE_T vchi_handle[VCHI_MAX_NUM_CONNECTIONS];
++	struct task_struct *io_thread;
++	struct semaphore io_sema;
++
++	u32 trans_id;
++
++	struct mutex lock;
++	struct list_head cmd_list;
++	struct list_head rsp_list;
++	struct list_head dead_list;
++
++	struct sm_cmd_rsp_blk free_blk[SM_MAX_NUM_CMD_RSP_BLKS];
++	struct list_head free_list;
++	struct mutex free_lock;
++	struct semaphore free_sema;
++
++};
++
++/* ---- Private Variables ------------------------------------------------ */
++
++/* ---- Private Function Prototypes -------------------------------------- */
++
++/* ---- Private Functions ------------------------------------------------ */
++static int
++bcm2835_vchi_msg_queue(VCHI_SERVICE_HANDLE_T handle,
++		       void *data,
++		       unsigned int size)
++{
++	return vchi_queue_kernel_message(handle,
++					 data,
++					 size);
++}
++
++static struct
++sm_cmd_rsp_blk *vc_vchi_cmd_create(struct sm_instance *instance,
++				   enum vc_sm_msg_type id, void *msg,
++		u32 size, int wait)
++{
++	struct sm_cmd_rsp_blk *blk;
++	struct vc_sm_msg_hdr_t *hdr;
++
++	if (down_interruptible(&instance->free_sema)) {
++		blk = kmalloc(sizeof(*blk), GFP_KERNEL);
++		if (!blk)
++			return NULL;
++
++		blk->alloc = 1;
++		sema_init(&blk->sema, 0);
++	} else {
++		mutex_lock(&instance->free_lock);
++		blk =
++		    list_first_entry(&instance->free_list,
++				     struct sm_cmd_rsp_blk, head);
++		list_del(&blk->head);
++		mutex_unlock(&instance->free_lock);
++	}
++
++	blk->sent = 0;
++	blk->wait = wait;
++	blk->length = sizeof(*hdr) + size;
++
++	hdr = (struct vc_sm_msg_hdr_t *)blk->msg;
++	hdr->type = id;
++	mutex_lock(&instance->lock);
++	instance->trans_id++;
++	/*
++	 * Retain the top bit for identifying asynchronous events, or VPU cmds.
++	 */
++	instance->trans_id &= ~0x80000000;
++	hdr->trans_id = blk->id = instance->trans_id;
++	mutex_unlock(&instance->lock);
++
++	if (size)
++		memcpy(hdr->body, msg, size);
++
++	return blk;
++}
++
++static void
++vc_vchi_cmd_delete(struct sm_instance *instance, struct sm_cmd_rsp_blk *blk)
++{
++	if (blk->alloc) {
++		kfree(blk);
++		return;
++	}
++
++	mutex_lock(&instance->free_lock);
++	list_add(&blk->head, &instance->free_list);
++	mutex_unlock(&instance->free_lock);
++	up(&instance->free_sema);
++}
++
++/* FIXME: Pass a function pointer to this into vc_vchi_sm.c */
++extern void
++vc_sm_vpu_event(struct sm_instance *instance, struct vc_sm_result_t *reply,
++		int reply_len);
++
++static int vc_sm_vchi_videocore_io(void *arg)
++{
++	struct sm_instance *instance = arg;
++	struct sm_cmd_rsp_blk *cmd = NULL, *cmd_tmp;
++	struct vc_sm_result_t *reply;
++	u32 reply_len;
++	s32 status;
++	int svc_use = 1;
++
++	while (1) {
++		if (svc_use)
++			vchi_service_release(instance->vchi_handle[0]);
++		svc_use = 0;
++		if (!down_interruptible(&instance->io_sema)) {
++			vchi_service_use(instance->vchi_handle[0]);
++			svc_use = 1;
++
++			do {
++				/*
++				 * Get new command and move it to response list
++				 */
++				mutex_lock(&instance->lock);
++				if (list_empty(&instance->cmd_list)) {
++					/* no more commands to process */
++					mutex_unlock(&instance->lock);
++					break;
++				}
++				cmd =
++				    list_first_entry(&instance->cmd_list,
++						     struct sm_cmd_rsp_blk,
++						     head);
++				list_move(&cmd->head, &instance->rsp_list);
++				cmd->sent = 1;
++				mutex_unlock(&instance->lock);
++
++				/* Send the command */
++				status = bcm2835_vchi_msg_queue(
++						instance->vchi_handle[0],
++						cmd->msg, cmd->length);
++				if (status) {
++					pr_err("%s: failed to queue message (%d)",
++					       __func__, status);
++				}
++
++				/* If no reply is needed then we're done */
++				if (!cmd->wait) {
++					mutex_lock(&instance->lock);
++					list_del(&cmd->head);
++					mutex_unlock(&instance->lock);
++					vc_vchi_cmd_delete(instance, cmd);
++					continue;
++				}
++
++				if (status) {
++					up(&cmd->sema);
++					continue;
++				}
++
++			} while (1);
++
++			while (!vchi_msg_peek
++			       (instance->vchi_handle[0], (void **)&reply,
++				&reply_len, VCHI_FLAGS_NONE)) {
++				if (reply->trans_id & 0x80000000) {
++					/* Async event or cmd from the VPU */
++					vc_sm_vpu_event(instance, reply, reply_len);
++				} else {
++					mutex_lock(&instance->lock);
++					list_for_each_entry(cmd,
++							    &instance->rsp_list,
++							    head) {
++						if (cmd->id == reply->trans_id)
++							break;
++					}
++					mutex_unlock(&instance->lock);
++
++					if (&cmd->head == &instance->rsp_list) {
++						//pr_debug("%s: received response %u, throw away...",
++						pr_err("%s: received response %u, throw away...",
++						       __func__,
++						       reply->trans_id);
++					} else if (reply_len > sizeof(cmd->msg)) {
++						pr_err("%s: reply too big (%u) %u, throw away...",
++						       __func__, reply_len,
++						     reply->trans_id);
++					} else {
++						memcpy(cmd->msg, reply, reply_len);
++						up(&cmd->sema);
++					}
++				}
++
++				vchi_msg_remove(instance->vchi_handle[0]);
++			}
++
++			/* Go through the dead list and free them */
++			mutex_lock(&instance->lock);
++			list_for_each_entry_safe(cmd, cmd_tmp,
++						 &instance->dead_list, head) {
++				list_del(&cmd->head);
++				vc_vchi_cmd_delete(instance, cmd);
++			}
++			mutex_unlock(&instance->lock);
++		}
++	}
++
++	return 0;
++}
++
++static void vc_sm_vchi_callback(void *param,
++				const VCHI_CALLBACK_REASON_T reason,
++				void *msg_handle)
++{
++	struct sm_instance *instance = param;
++
++	(void)msg_handle;
++
++	switch (reason) {
++	case VCHI_CALLBACK_MSG_AVAILABLE:
++		up(&instance->io_sema);
++		break;
++
++	case VCHI_CALLBACK_SERVICE_CLOSED:
++		pr_info("%s: service CLOSED!!", __func__);
++	default:
++		break;
++	}
++}
++
++struct sm_instance *vc_sm_vchi_init(VCHI_INSTANCE_T vchi_instance,
++				    VCHI_CONNECTION_T **vchi_connections,
++				    uint32_t num_connections)
++{
++	u32 i;
++	struct sm_instance *instance;
++	int status;
++
++	pr_debug("%s: start", __func__);
++
++	if (num_connections > VCHI_MAX_NUM_CONNECTIONS) {
++		pr_err("%s: unsupported number of connections %u (max=%u)",
++		       __func__, num_connections, VCHI_MAX_NUM_CONNECTIONS);
++
++		goto err_null;
++	}
++	/* Allocate memory for this instance */
++	instance = kzalloc(sizeof(*instance), GFP_KERNEL);
++
++	/* Misc initialisations */
++	mutex_init(&instance->lock);
++	sema_init(&instance->io_sema, 0);
++	INIT_LIST_HEAD(&instance->cmd_list);
++	INIT_LIST_HEAD(&instance->rsp_list);
++	INIT_LIST_HEAD(&instance->dead_list);
++	INIT_LIST_HEAD(&instance->free_list);
++	sema_init(&instance->free_sema, SM_MAX_NUM_CMD_RSP_BLKS);
++	mutex_init(&instance->free_lock);
++	for (i = 0; i < SM_MAX_NUM_CMD_RSP_BLKS; i++) {
++		sema_init(&instance->free_blk[i].sema, 0);
++		list_add(&instance->free_blk[i].head, &instance->free_list);
++	}
++
++	/* Open the VCHI service connections */
++	instance->num_connections = num_connections;
++	for (i = 0; i < num_connections; i++) {
++		SERVICE_CREATION_T params = {
++			VCHI_VERSION_EX(VC_SM_VER, VC_SM_MIN_VER),
++			VC_SM_SERVER_NAME,
++			vchi_connections[i],
++			0,
++			0,
++			vc_sm_vchi_callback,
++			instance,
++			0,
++			0,
++			0,
++		};
++
++		status = vchi_service_open(vchi_instance,
++					   &params, &instance->vchi_handle[i]);
++		if (status) {
++			pr_err("%s: failed to open VCHI service (%d)",
++			       __func__, status);
++
++			goto err_close_services;
++		}
++	}
++
++	/* Create the thread which takes care of all io to/from videoocore. */
++	instance->io_thread = kthread_create(&vc_sm_vchi_videocore_io,
++					     (void *)instance, "SMIO");
++	if (!instance->io_thread) {
++		pr_err("%s: failed to create SMIO thread", __func__);
++
++		goto err_close_services;
++	}
++	set_user_nice(instance->io_thread, -10);
++	wake_up_process(instance->io_thread);
++
++	pr_debug("%s: success - instance 0x%x", __func__,
++		 (unsigned int)instance);
++	return instance;
++
++err_close_services:
++	for (i = 0; i < instance->num_connections; i++) {
++		if (instance->vchi_handle[i])
++			vchi_service_close(instance->vchi_handle[i]);
++	}
++	kfree(instance);
++err_null:
++	pr_debug("%s: FAILED", __func__);
++	return NULL;
++}
++
++int vc_sm_vchi_stop(struct sm_instance **handle)
++{
++	struct sm_instance *instance;
++	u32 i;
++
++	if (!handle) {
++		pr_err("%s: invalid pointer to handle %p", __func__, handle);
++		goto lock;
++	}
++
++	if (!*handle) {
++		pr_err("%s: invalid handle %p", __func__, *handle);
++		goto lock;
++	}
++
++	instance = *handle;
++
++	/* Close all VCHI service connections */
++	for (i = 0; i < instance->num_connections; i++) {
++		s32 success;
++
++		vchi_service_use(instance->vchi_handle[i]);
++
++		success = vchi_service_close(instance->vchi_handle[i]);
++	}
++
++	kfree(instance);
++
++	*handle = NULL;
++	return 0;
++
++lock:
++	return -EINVAL;
++}
++
++int vc_sm_vchi_send_msg(struct sm_instance *handle,
++			enum vc_sm_msg_type msg_id,
++			void *msg, uint32_t msg_size,
++			void *result, uint32_t result_size,
++			u32 *cur_trans_id, uint8_t wait_reply)
++{
++	int status = 0;
++	struct sm_instance *instance = handle;
++	struct sm_cmd_rsp_blk *cmd_blk;
++
++	if (!handle) {
++		pr_err("%s: invalid handle", __func__);
++		return -EINVAL;
++	}
++	if (!msg) {
++		pr_err("%s: invalid msg pointer", __func__);
++		return -EINVAL;
++	}
++
++	cmd_blk =
++	    vc_vchi_cmd_create(instance, msg_id, msg, msg_size, wait_reply);
++	if (!cmd_blk) {
++		pr_err("[%s]: failed to allocate global tracking resource",
++		       __func__);
++		return -ENOMEM;
++	}
++
++	if (cur_trans_id)
++		*cur_trans_id = cmd_blk->id;
++
++	mutex_lock(&instance->lock);
++	list_add_tail(&cmd_blk->head, &instance->cmd_list);
++	mutex_unlock(&instance->lock);
++	up(&instance->io_sema);
++
++	if (!wait_reply)
++		/* We're done */
++		return 0;
++
++	/* Wait for the response */
++	if (down_interruptible(&cmd_blk->sema)) {
++		mutex_lock(&instance->lock);
++		if (!cmd_blk->sent) {
++			list_del(&cmd_blk->head);
++			mutex_unlock(&instance->lock);
++			vc_vchi_cmd_delete(instance, cmd_blk);
++			return -ENXIO;
++		}
++		mutex_unlock(&instance->lock);
++
++		mutex_lock(&instance->lock);
++		list_move(&cmd_blk->head, &instance->dead_list);
++		mutex_unlock(&instance->lock);
++		up(&instance->io_sema);
++		return -EINTR;	/* We're done */
++	}
++
++	if (result && result_size) {
++		memcpy(result, cmd_blk->msg, result_size);
++	} else {
++		struct vc_sm_result_t *res =
++			(struct vc_sm_result_t *)cmd_blk->msg;
++		status = (res->success == 0) ? 0 : -ENXIO;
++	}
++
++	mutex_lock(&instance->lock);
++	list_del(&cmd_blk->head);
++	mutex_unlock(&instance->lock);
++	vc_vchi_cmd_delete(instance, cmd_blk);
++	return status;
++}
++
++int vc_sm_vchi_alloc(struct sm_instance *handle, struct vc_sm_alloc_t *msg,
++		     struct vc_sm_alloc_result_t *result,
++		     uint32_t *cur_trans_id)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_ALLOC,
++				   msg, sizeof(*msg), result, sizeof(*result),
++				   cur_trans_id, 1);
++}
++
++int vc_sm_vchi_free(struct sm_instance *handle,
++		    struct vc_sm_free_t *msg, uint32_t *cur_trans_id)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_FREE,
++				   msg, sizeof(*msg), 0, 0, cur_trans_id, 0);
++}
++
++int vc_sm_vchi_lock(struct sm_instance *handle,
++		    struct vc_sm_lock_unlock_t *msg,
++		    struct vc_sm_lock_result_t *result,
++		    uint32_t *cur_trans_id)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_LOCK,
++				   msg, sizeof(*msg), result, sizeof(*result),
++				   cur_trans_id, 1);
++}
++
++int vc_sm_vchi_unlock(struct sm_instance *handle,
++		      struct vc_sm_lock_unlock_t *msg,
++		      u32 *cur_trans_id, uint8_t wait_reply)
++{
++	return vc_sm_vchi_send_msg(handle, wait_reply ?
++				   VC_SM_MSG_TYPE_UNLOCK :
++				   VC_SM_MSG_TYPE_UNLOCK_NOANS, msg,
++				   sizeof(*msg), 0, 0, cur_trans_id,
++				   wait_reply);
++}
++
++int vc_sm_vchi_resize(struct sm_instance *handle, struct vc_sm_resize_t *msg,
++		      uint32_t *cur_trans_id)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_RESIZE,
++				   msg, sizeof(*msg), 0, 0, cur_trans_id, 1);
++}
++
++int vc_sm_vchi_walk_alloc(struct sm_instance *handle)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_WALK_ALLOC,
++				   0, 0, 0, 0, 0, 0);
++}
++
++int vc_sm_vchi_clean_up(struct sm_instance *handle,
++			struct vc_sm_action_clean_t *msg)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_ACTION_CLEAN,
++				   msg, sizeof(*msg), 0, 0, 0, 0);
++}
++
++int vc_sm_vchi_import(struct sm_instance *handle, struct vc_sm_import *msg,
++		      struct vc_sm_import_result *result,
++		      uint32_t *cur_trans_id)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_IMPORT,
++				   msg, sizeof(*msg), result, sizeof(*result),
++				   cur_trans_id, 1);
++}
++
++int vc_sm_vchi_client_version(struct sm_instance *handle,
++			      struct vc_sm_version *msg,
++			      struct vc_sm_result_t *result,
++			      uint32_t *cur_trans_id)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_CLIENT_VERSION,
++				   //msg, sizeof(*msg), result, sizeof(*result),
++				   //cur_trans_id, 1);
++				   msg, sizeof(*msg), NULL, 0,
++				   cur_trans_id, 0);
++}
++
++int vc_sm_vchi_client_vc_mem_req_reply(struct sm_instance *handle,
++				       struct vc_sm_vc_mem_request_result *msg,
++				       uint32_t *cur_trans_id)
++{
++	return vc_sm_vchi_send_msg(handle, VC_SM_MSG_TYPE_VC_MEM_REQUEST_REPLY,
++				   msg, sizeof(*msg), 0, 0, cur_trans_id, 0);
++}
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_vchi_sm.h b/drivers/staging/vc04_services/vc-sm-cma/vc_vchi_sm.h
+new file mode 100644
+index 000000000000..007680c5d398
+--- /dev/null
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_vchi_sm.h
+@@ -0,0 +1,105 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * VideoCore Shared Memory CMA allocator
++ *
++ * Copyright: 2018, Raspberry Pi (Trading) Ltd
++ * Copyright 2011-2012 Broadcom Corporation.  All rights reserved.
++ *
++ */
++
++#ifndef __vc_sm_vchi_H__INCLUDED__
++#define __vc_sm_vchi_H__INCLUDED__
++
++#include "interface/vchi/vchi.h"
++
++#include "vc_sm_defs.h"
++
++/*
++ * Forward declare.
++ */
++struct sm_instance;
++
++/*
++ * Initialize the shared memory service, opens up vchi connection to talk to it.
++ */
++struct sm_instance *vc_sm_vchi_init(VCHI_INSTANCE_T vchi_instance,
++				    VCHI_CONNECTION_T **vchi_connections,
++				    uint32_t num_connections);
++
++/*
++ * Terminates the shared memory service.
++ */
++int vc_sm_vchi_stop(struct sm_instance **handle);
++
++/*
++ * Ask the shared memory service to allocate some memory on videocre and
++ * return the result of this allocation (which upon success will be a pointer
++ * to some memory in videocore space).
++ */
++int vc_sm_vchi_alloc(struct sm_instance *handle, struct vc_sm_alloc_t *alloc,
++		     struct vc_sm_alloc_result_t *alloc_result,
++		     uint32_t *trans_id);
++
++/*
++ * Ask the shared memory service to free up some memory that was previously
++ * allocated by the vc_sm_vchi_alloc function call.
++ */
++int vc_sm_vchi_free(struct sm_instance *handle,
++		    struct vc_sm_free_t *free, uint32_t *trans_id);
++
++/*
++ * Ask the shared memory service to lock up some memory that was previously
++ * allocated by the vc_sm_vchi_alloc function call.
++ */
++int vc_sm_vchi_lock(struct sm_instance *handle,
++		    struct vc_sm_lock_unlock_t *lock_unlock,
++		    struct vc_sm_lock_result_t *lock_result,
++		    uint32_t *trans_id);
++
++/*
++ * Ask the shared memory service to unlock some memory that was previously
++ * allocated by the vc_sm_vchi_alloc function call.
++ */
++int vc_sm_vchi_unlock(struct sm_instance *handle,
++		      struct vc_sm_lock_unlock_t *lock_unlock,
++		      u32 *trans_id, uint8_t wait_reply);
++
++/*
++ * Ask the shared memory service to resize some memory that was previously
++ * allocated by the vc_sm_vchi_alloc function call.
++ */
++int vc_sm_vchi_resize(struct sm_instance *handle,
++		      struct vc_sm_resize_t *resize, uint32_t *trans_id);
++
++/*
++ * Walk the allocated resources on the videocore side, the allocation will
++ * show up in the log.  This is purely for debug/information and takes no
++ * specific actions.
++ */
++int vc_sm_vchi_walk_alloc(struct sm_instance *handle);
++
++/*
++ * Clean up following a previously interrupted action which left the system
++ * in a bad state of some sort.
++ */
++int vc_sm_vchi_clean_up(struct sm_instance *handle,
++			struct vc_sm_action_clean_t *action_clean);
++
++/*
++ * Import a contiguous block of memory and wrap it in a GPU MEM_HANDLE_T.
++ */
++int vc_sm_vchi_import(struct sm_instance *handle, struct vc_sm_import *msg,
++		      struct vc_sm_import_result *result,
++		      uint32_t *cur_trans_id);
++
++int vc_sm_vchi_client_version(struct sm_instance *handle,
++			      struct vc_sm_version *msg,
++			      struct vc_sm_result_t *result,
++			      uint32_t *cur_trans_id);
++
++int vc_sm_vchi_client_vc_mem_req_reply(struct sm_instance *handle,
++				       struct vc_sm_vc_mem_request_result *msg,
++				       uint32_t *cur_trans_id);
++
++#endif /* __vc_sm_vchi_H__INCLUDED__ */
+diff --git a/include/linux/broadcom/vc_sm_cma_ioctl.h b/include/linux/broadcom/vc_sm_cma_ioctl.h
+new file mode 100644
+index 000000000000..694202e7cb38
+--- /dev/null
++++ b/include/linux/broadcom/vc_sm_cma_ioctl.h
+@@ -0,0 +1,178 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++/*
++ * Copyright 2018 Raspberry Pi (Trading) Ltd.  All rights reserved.
++ *
++ * Based on vmcs_sm_ioctl.h Copyright Broadcom Corporation.
++ */
++
++#ifndef __VC_SM_CMA_IOCTL_H
++#define __VC_SM_CMA_IOCTL_H
++
++/* ---- Include Files ---------------------------------------------------- */
++
++#if defined(__KERNEL__)
++#include <linux/types.h>	/* Needed for standard types */
++#else
++#include <stdint.h>
++#endif
++
++#include <linux/ioctl.h>
++
++/* ---- Constants and Types ---------------------------------------------- */
++
++#define VC_SM_CMA_RESOURCE_NAME               32
++#define VC_SM_CMA_RESOURCE_NAME_DEFAULT       "sm-host-resource"
++
++/* Type define used to create unique IOCTL number */
++#define VC_SM_CMA_MAGIC_TYPE                  'J'
++
++/* IOCTL commands on /dev/vc-sm-cma */
++enum vc_sm_cma_cmd_e {
++	VC_SM_CMA_CMD_ALLOC = 0x5A,	/* Start at 0x5A arbitrarily */
++	VC_SM_CMA_CMD_FLUSH,
++	VC_SM_CMA_CMD_INVALID,
++
++	VC_SM_CMA_CMD_MAPPED_VC_HDL_FROM_HDL,
++	VC_SM_CMA_CMD_MAPPED_VC_ADDR_FROM_HDL,
++
++	VC_SM_CMA_CMD_VC_WALK_ALLOC,
++	VC_SM_CMA_CMD_HOST_WALK_MAP,
++	VC_SM_CMA_CMD_HOST_WALK_PID_ALLOC,
++	VC_SM_CMA_CMD_HOST_WALK_PID_MAP,
++
++	VC_SM_CMA_CMD_CLEAN_INVALID,
++	VC_SM_CMA_CMD_CLEAN_INVALID2,
++
++	VC_SM_CMA_CMD_IMPORT_DMABUF,
++
++	VC_SM_CMA_CMD_GET_VERSION,
++
++	VC_SM_CMA_CMD_LAST	/* Do not delete */
++};
++
++/* Cache type supported, conveniently matches the user space definition in
++ * user-vcsm.h.
++ */
++enum vc_sm_cma_cache_e {
++	VC_SM_CMA_CACHE_NONE,
++	VC_SM_CMA_CACHE_HOST,
++	VC_SM_CMA_CACHE_VC,
++	VC_SM_CMA_CACHE_BOTH,
++};
++
++/* IOCTL Data structures */
++struct vc_sm_cma_ioctl_alloc {
++	/* user -> kernel */
++	unsigned int size;
++	unsigned int num;
++	enum vc_sm_cma_cache_e cached;
++	char name[VC_SM_CMA_RESOURCE_NAME];
++
++	/* kernel -> user */
++	unsigned int handle;
++	/* unsigned int base_addr; */
++};
++
++struct vc_sm_cma_ioctl_alloc_share {
++	/* user -> kernel */
++	unsigned int handle;
++	unsigned int size;
++};
++
++struct vc_sm_cma_ioctl_map {
++	/* user -> kernel */
++	/* and kernel -> user */
++	int fd;
++	unsigned int handle;
++	unsigned int addr;
++
++	/* kernel -> user */
++	unsigned int size;
++};
++
++struct vc_sm_cma_ioctl_walk {
++	/* user -> kernel */
++	unsigned int pid;
++};
++
++struct vc_sm_cma_ioctl_cache {
++	/* user -> kernel */
++	unsigned int handle;
++	unsigned int addr;
++	unsigned int size;
++};
++
++struct vc_sm_cma_ioctl_clean_invalid {
++	/* user -> kernel */
++	struct {
++		unsigned int cmd;
++		unsigned int handle;
++		unsigned int addr;
++		unsigned int size;
++	} s[8];
++};
++
++struct vc_sm_cma_ioctl_clean_invalid2 {
++	uint8_t op_count;
++	uint8_t zero[3];
++	struct vc_sm_cma_ioctl_clean_invalid_block {
++		uint16_t invalidate_mode;
++		uint16_t block_count;
++		void     *start_address;
++		uint32_t block_size;
++		uint32_t inter_block_stride;
++	} s[0];
++};
++
++struct vc_sm_cma_ioctl_import_dmabuf {
++	/* user -> kernel */
++	int dmabuf_fd;
++	enum vc_sm_cma_cache_e cached;
++	char name[VC_SM_CMA_RESOURCE_NAME];
++
++	/* kernel -> user */
++	int handle;
++	unsigned int size;
++};
++
++/* IOCTL numbers */
++#define VC_SM_CMA_IOCTL_MEM_ALLOC\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_ALLOC,\
++	 struct vc_sm_cma_ioctl_alloc)
++#define VC_SM_CMA_IOCTL_MEM_FLUSH\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_FLUSH,\
++	 struct vc_sm_cma_ioctl_cache)
++#define VC_SM_CMA_IOCTL_MEM_INVALID\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_INVALID,\
++	 struct vc_sm_cma_ioctl_cache)
++#define VC_SM_CMA_IOCTL_MEM_CLEAN_INVALID\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_CLEAN_INVALID,\
++	 struct vc_sm_cma_ioctl_clean_invalid)
++#define VC_SM_CMA_IOCTL_MEM_CLEAN_INVALID2\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_CLEAN_INVALID2,\
++	 struct vc_sm_cma_ioctl_clean_invalid2)
++
++#define VC_SM_CMA_IOCTL_MAP_VC_HDL_FR_HDL\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_MAPPED_VC_HDL_FROM_HDL,\
++	 struct vc_sm_cma_ioctl_map)
++#define VC_SM_CMA_IOCTL_MAP_VC_ADDR_FR_HDL\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_MAPPED_VC_ADDR_FROM_HDL,\
++	 struct vc_sm_cma_ioctl_map)
++
++#define VC_SM_CMA_IOCTL_VC_WALK_ALLOC\
++	_IO(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_VC_WALK_ALLOC)
++#define VC_SM_CMA_IOCTL_HOST_WALK_MAP\
++	_IO(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_HOST_WALK_MAP)
++#define VC_SM_CMA_IOCTL_HOST_WALK_PID_ALLOC\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_HOST_WALK_PID_ALLOC,\
++	 struct vc_sm_cma_ioctl_walk)
++#define VC_SM_CMA_IOCTL_HOST_WALK_PID_MAP\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_HOST_WALK_PID_MAP,\
++	 struct vc_sm_cma_ioctl_walk)
++
++#define VC_SM_CMA_IOCTL_MEM_IMPORT_DMABUF\
++	_IOR(VC_SM_CMA_MAGIC_TYPE, VC_SM_CMA_CMD_IMPORT_DMABUF,\
++	 struct vc_sm_cma_ioctl_import_dmabuf)
++
++#endif /* __VC_SM_CMA_IOCTL_H */
+-- 
+2.17.0
+

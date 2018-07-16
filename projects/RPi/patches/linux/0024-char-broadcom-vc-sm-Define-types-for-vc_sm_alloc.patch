@@ -1,0 +1,69 @@
+From c09397c8ce1ac88107a26a4f9b86ad870d689139 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 15 Feb 2018 16:27:03 +0000
+Subject: [PATCH 24/80] char: broadcom: vc-sm: Define types for vc_sm_alloc
+
+vc_sm_alloc took a struct vc_sm_alloc_t which wasn't defined
+or otherwise included from vc_sm_knl.h (which has not been used
+before).
+vc_sm_alloc_t is actually one of the messages to be sent to
+the VPU, so totally the wrong thing to use as an internal
+kernel API structure. Define and use a new, more appropriate,
+structure.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/char/broadcom/vc_sm/vc_sm_knl.h | 12 +++++++++++-
+ drivers/char/broadcom/vc_sm/vmcs_sm.c   |  5 ++---
+ 2 files changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/char/broadcom/vc_sm/vc_sm_knl.h b/drivers/char/broadcom/vc_sm/vc_sm_knl.h
+index 0eb71cbcd233..f7c057e3b0b4 100644
+--- a/drivers/char/broadcom/vc_sm/vc_sm_knl.h
++++ b/drivers/char/broadcom/vc_sm/vc_sm_knl.h
+@@ -27,8 +27,18 @@ enum vc_sm_lock_cache_mode {
+ 	VC_SM_LOCK_NON_CACHED,
+ };
+ 
++/* Request to allocate memory (HOST->VC) */
++struct vc_sm_knl_alloc_t {
++	/* type of memory to allocate */
++	bool cached;
++	/* byte amount of data to allocate per unit */
++	u32 base_unit;
++	/* number of unit to allocate */
++	u32 num_unit;
++};
++
+ /* Allocate a shared memory handle and block. */
+-int vc_sm_alloc(struct vc_sm_alloc_t *alloc, int *handle);
++int vc_sm_alloc(struct vc_sm_knl_alloc_t *alloc, int *handle);
+ 
+ /* Free a previously allocated shared memory handle and block. */
+ int vc_sm_free(int handle);
+diff --git a/drivers/char/broadcom/vc_sm/vmcs_sm.c b/drivers/char/broadcom/vc_sm/vmcs_sm.c
+index 11f23f91ac7c..193468627482 100644
+--- a/drivers/char/broadcom/vc_sm/vmcs_sm.c
++++ b/drivers/char/broadcom/vc_sm/vmcs_sm.c
+@@ -3329,7 +3329,7 @@ static int bcm2835_vcsm_remove(struct platform_device *pdev)
+ 
+ #if defined(__KERNEL__)
+ /* Allocate a shared memory handle and block. */
+-int vc_sm_alloc(struct vc_sm_alloc_t *alloc, int *handle)
++int vc_sm_alloc(struct vc_sm_knl_alloc_t *alloc, int *handle)
+ {
+ 	struct vmcs_sm_ioctl_alloc ioparam = { 0 };
+ 	int ret;
+@@ -3343,8 +3343,7 @@ int vc_sm_alloc(struct vc_sm_alloc_t *alloc, int *handle)
+ 
+ 	ioparam.size = alloc->base_unit;
+ 	ioparam.num = alloc->num_unit;
+-	ioparam.cached =
+-	    alloc->type == VC_SM_ALLOC_CACHED ? VMCS_SM_CACHE_VC : 0;
++	ioparam.cached = alloc->cached ? VMCS_SM_CACHE_VC : 0;
+ 
+ 	ret = vc_sm_ioctl_alloc(sm_state->data_knl, &ioparam);
+ 
+-- 
+2.17.0
+

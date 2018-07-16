@@ -1,0 +1,219 @@
+From 294705e360f8da72837838375155cd0f2c90ba40 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Fri, 16 Feb 2018 15:27:04 +0000
+Subject: [PATCH 29/80] staging: bcm2835-camera: Convert from vc-sm to
+ vc-sm-cma.
+
+vc-sm is the older driver. Replace it with the newer version.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../vc04_services/bcm2835-camera/Kconfig      |  2 +-
+ .../vc04_services/bcm2835-camera/Makefile     |  1 -
+ .../bcm2835-camera/bcm2835-camera.c           | 28 +++++++++++--------
+ .../vc04_services/bcm2835-camera/mmal-vchiq.c | 26 +++++++++--------
+ 4 files changed, 31 insertions(+), 26 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/Kconfig b/drivers/staging/vc04_services/bcm2835-camera/Kconfig
+index b482dbc60c8e..5a3b1323c37a 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/Kconfig
++++ b/drivers/staging/vc04_services/bcm2835-camera/Kconfig
+@@ -2,7 +2,7 @@ config VIDEO_BCM2835
+ 	tristate "BCM2835 Camera"
+ 	depends on MEDIA_SUPPORT
+ 	depends on VIDEO_V4L2 && (ARCH_BCM2835 || COMPILE_TEST)
+-	select BCM_VC_SM
++	select BCM_VC_SM_CMA
+ 	select BCM2835_VCHIQ
+ 	select VIDEOBUF2_DMA_CONTIG
+ 	select BTREE
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/Makefile b/drivers/staging/vc04_services/bcm2835-camera/Makefile
+index f62631b8f67b..2a4565e682d8 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/Makefile
++++ b/drivers/staging/vc04_services/bcm2835-camera/Makefile
+@@ -8,5 +8,4 @@ obj-$(CONFIG_VIDEO_BCM2835) += bcm2835-v4l2.o
+ 
+ ccflags-y += \
+ 	-Idrivers/staging/vc04_services \
+-	-Idrivers/char/broadcom/vc_sm \
+ 	-D__VCCOREVER__=0x04000000
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+index 56e5d436ff25..919197645255 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+@@ -18,6 +18,7 @@
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
++#include <linux/syscalls.h>
+ #include <media/videobuf2-dma-contig.h>
+ #include <media/v4l2-device.h>
+ #include <media/v4l2-ioctl.h>
+@@ -320,7 +321,7 @@ static int buffer_prepare(struct vb2_buffer *vb)
+ 		return -EINVAL;
+ 	}
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	/*
+ 	 * Two niggles:
+ 	 * 1 - We want to do this at init, but vb2_core_expbuf checks that the
+@@ -341,10 +342,13 @@ static int buffer_prepare(struct vb2_buffer *vb)
+ 			v4l2_err(&dev->v4l2_dev, "%s: Failed to expbuf idx %d, ret %d\n",
+ 				 __func__, vb->index, ret);
+ 		buf->dma_buf = dma_buf_get(fd);
+-		/* Drop the fd's reference to the buffer */
+-		dma_buf_put(buf->dma_buf);
+-		/* Release the fd as we now have a ref to the dma_buf */
+-		put_unused_fd(fd);
++		v4l2_err(&dev->v4l2_dev, "%s: Given dma_buf fd %d, %p\n",
++			 __func__, fd, buf->dma_buf);
++		/*
++		 * Release the fd (and the associated refcount) as we now have
++		 * a ref to the dma_buf
++		 */
++		sys_close(fd);
+ 	}
+ #else
+ 	ret = 0;
+@@ -363,7 +367,7 @@ static void buffer_cleanup(struct vb2_buffer *vb)
+ 
+ 	mmal_vchi_buffer_cleanup(buf);
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	if (buf->dma_buf)
+ 		dma_buf_put(buf->dma_buf);
+ #endif
+@@ -1640,7 +1644,7 @@ static int __init mmal_init(struct bm2835_mmal_dev *dev)
+ 	u32 supported_encodings[MAX_SUPPORTED_ENCODINGS];
+ 	int param_size;
+ 	struct vchiq_mmal_component  *camera;
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	unsigned int enable = 1;
+ #endif
+ 
+@@ -1710,7 +1714,7 @@ static int __init mmal_init(struct bm2835_mmal_dev *dev)
+ 	format->es->video.frame_rate.num = 0; /* Rely on fps_range */
+ 	format->es->video.frame_rate.den = 1;
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	vchiq_mmal_port_parameter_set(
+ 			dev->instance,
+ 			&camera->output[MMAL_CAMERA_PORT_PREVIEW],
+@@ -1732,7 +1736,7 @@ static int __init mmal_init(struct bm2835_mmal_dev *dev)
+ 	format->es->video.frame_rate.num = 0; /* Rely on fps_range */
+ 	format->es->video.frame_rate.den = 1;
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	vchiq_mmal_port_parameter_set(
+ 			dev->instance,
+ 			&camera->output[MMAL_CAMERA_PORT_VIDEO],
+@@ -1753,7 +1757,7 @@ static int __init mmal_init(struct bm2835_mmal_dev *dev)
+ 	format->es->video.frame_rate.num = 0; /* Rely on fps_range */
+ 	format->es->video.frame_rate.den = 1;
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	vchiq_mmal_port_parameter_set(
+ 			dev->instance,
+ 			&camera->output[MMAL_CAMERA_PORT_CAPTURE],
+@@ -1798,7 +1802,7 @@ static int __init mmal_init(struct bm2835_mmal_dev *dev)
+ 		goto unreg_image_encoder;
+ 	}
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	vchiq_mmal_port_parameter_set(
+ 			dev->instance,
+ 			&dev->component[MMAL_COMPONENT_IMAGE_ENCODE]->output[0],
+@@ -1829,7 +1833,7 @@ static int __init mmal_init(struct bm2835_mmal_dev *dev)
+ 						 encoder_port);
+ 	}
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	vchiq_mmal_port_parameter_set(
+ 			dev->instance,
+ 			&dev->component[MMAL_COMPONENT_VIDEO_ENCODE]->output[0],
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+index ad2175d6807b..5860dffd50c8 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+@@ -32,8 +32,8 @@
+ #include "mmal-vchiq.h"
+ #include "mmal-msg.h"
+ 
+-#if defined(CONFIG_BCM_VC_SM)
+-#include "vc_sm_knl.h"
++#if defined(CONFIG_BCM_VC_SM_CMA)
++#include "vc-sm-cma/vc_sm_knl.h"
+ #endif
+ 
+ #define USE_VCHIQ_ARM
+@@ -524,7 +524,7 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
+ 	/* buffer header */
+ 	m.u.buffer_from_host.buffer_header.cmd = 0;
+ 	if (port->zero_copy) {
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 		m.u.buffer_from_host.buffer_header.data = buf->vc_handle;
+ #else
+ 		pr_warn("%s: port set to zero_copy but no VCSM", __func__);
+@@ -1722,27 +1722,25 @@ int vchiq_mmal_submit_buffer(struct vchiq_mmal_instance *instance,
+ 	unsigned long flags = 0;
+ 	int ret;
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
+ 	/*
+ 	 * We really want to do this in mmal_vchi_buffer_init but can't as
+ 	 * videobuf2 won't let us have the dmabuf there.
+ 	 */
+ 	if (port->zero_copy && buffer->dma_buf && !buffer->vcsm_handle) {
+-		int ret;
+-
+-		ret = vc_sm_import_dmabuf(buffer->dma_buf,
+-					  &buffer->vcsm_handle);
++		ret = vc_sm_cma_import_dmabuf(buffer->dma_buf,
++					      &buffer->vcsm_handle);
+ 		if (ret) {
+ 			pr_err("%s: vc_sm_import_dmabuf_fd failed, ret %d\n",
+ 			       __func__, ret);
+ 			return ret;
+ 		}
+ 
+-		buffer->vc_handle = vc_sm_int_handle(buffer->vcsm_handle);
++		buffer->vc_handle = vc_sm_cma_int_handle(buffer->vcsm_handle);
+ 		if (!buffer->vc_handle) {
+ 			pr_err("%s: vc_sm_int_handle failed %d\n",
+ 			       __func__, ret);
+-			vc_sm_free(buffer->vcsm_handle);
++			vc_sm_cma_free(buffer->vcsm_handle);
+ 			return ret;
+ 		}
+ 	}
+@@ -1781,11 +1779,15 @@ int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf)
+ 		release_msg_context(msg_context);
+ 	buf->msg_context = NULL;
+ 
+-#if defined(CONFIG_BCM_VC_SM)
++#if defined(CONFIG_BCM_VC_SM_CMA)
++	pr_err("%s: vcsm_handle %d\n",
++	       __func__, buf->vcsm_handle);
+ 	if (buf->vcsm_handle) {
+ 		int ret;
+ 
+-		ret = vc_sm_free(buf->vcsm_handle);
++		pr_err("%s: vc_sm_cma_free on handle %d\n", __func__,
++		       buf->vcsm_handle);
++		ret = vc_sm_cma_free(buf->vcsm_handle);
+ 		if (ret)
+ 			pr_err("%s: vcsm_free failed, ret %d\n", __func__, ret);
+ 	}
+-- 
+2.17.0
+

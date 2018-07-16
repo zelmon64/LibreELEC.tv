@@ -1,0 +1,58 @@
+From de8bc7bb859730dbbe3207a96304eea0a334b4de Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 15 Feb 2018 16:13:48 +0000
+Subject: [PATCH 23/80] staging:bcm2835-camera: Move struct vchiq_mmal_rect
+
+struct vchiq_mmal_rect is only referenced from
+mmal-parameters.h, yet was defined in mmal-vchiq.h.
+
+Move it to avoid having to include multiple headers
+for no reason.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../vc04_services/bcm2835-camera/mmal-parameters.h        | 8 ++++++++
+ drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h | 8 --------
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
+index 37fba8f62d4d..14307642edf2 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-parameters.h
+@@ -567,6 +567,14 @@ enum mmal_parameter_displayset {
+ 	MMAL_DISPLAY_SET_ALPHA = 0x400,
+ };
+ 
++/* rectangle, used lots so it gets its own struct */
++struct vchiq_mmal_rect {
++	s32 x;
++	s32 y;
++	s32 width;
++	s32 height;
++};
++
+ struct mmal_parameter_displayregion {
+ 	/** Bitfield that indicates which fields are set and should be
+ 	 * used. All other fields will maintain their current value.
+diff --git a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
+index bae72eed2b1c..d5545f4aee63 100644
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
+@@ -35,14 +35,6 @@ enum vchiq_mmal_es_type {
+ 	MMAL_ES_TYPE_SUBPICTURE   /**< Sub-picture elementary stream */
+ };
+ 
+-/* rectangle, used lots so it gets its own struct */
+-struct vchiq_mmal_rect {
+-	s32 x;
+-	s32 y;
+-	s32 width;
+-	s32 height;
+-};
+-
+ struct vchiq_mmal_port_buffer {
+ 	unsigned int num; /* number of buffers */
+ 	u32 size; /* size of buffers */
+-- 
+2.17.0
+

@@ -1,0 +1,5417 @@
+From 062f0c02c0aae759ef4784aeac25e298c9c724f1 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Fri, 23 Feb 2018 16:59:15 +0000
+Subject: [PATCH 48/80] staging: vc04_services: Add V4L2 M2M device for codecs.
+
+Adds a V4L2 memory-to-memory device that wraps the video
+encode and decode components on the VPU. This reuses a fair
+chunk of the existing V4L2 camera driver MMAL VCHIQ interface.
+
+Basic video encode is working. Controls need to be added.
+Decode needs to sort out resolution changes and setting
+selection regions.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/staging/vc04_services/Kconfig         |    2 +
+ drivers/staging/vc04_services/Makefile        |    1 +
+ .../vc04_services/bcm2835-codec/Kconfig       |   11 +
+ .../vc04_services/bcm2835-codec/Makefile      |    8 +
+ .../bcm2835-codec/bcm2835-v4l2-codec.c        | 1398 +++++++++++
+ .../vc04_services/bcm2835-codec/mmal-common.h |   79 +
+ .../bcm2835-codec/mmal-encodings.h            |  127 +
+ .../bcm2835-codec/mmal-msg-common.h           |   51 +
+ .../bcm2835-codec/mmal-msg-format.h           |  109 +
+ .../bcm2835-codec/mmal-msg-port.h             |  112 +
+ .../vc04_services/bcm2835-codec/mmal-msg.h    |  410 ++++
+ .../bcm2835-codec/mmal-parameters.h           |  701 ++++++
+ .../vc04_services/bcm2835-codec/mmal-vchiq.c  | 2098 +++++++++++++++++
+ .../vc04_services/bcm2835-codec/mmal-vchiq.h  |  170 ++
+ 14 files changed, 5277 insertions(+)
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/Kconfig
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/Makefile
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-common.h
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-encodings.h
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-msg-common.h
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-msg-format.h
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-msg-port.h
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-msg.h
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-parameters.h
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.c
+ create mode 100644 drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.h
+
+diff --git a/drivers/staging/vc04_services/Kconfig b/drivers/staging/vc04_services/Kconfig
+index ce4b35695bea..06a6a163a317 100644
+--- a/drivers/staging/vc04_services/Kconfig
++++ b/drivers/staging/vc04_services/Kconfig
+@@ -35,6 +35,8 @@ source "drivers/staging/vc04_services/bcm2835-audio/Kconfig"
+ 
+ source "drivers/staging/vc04_services/bcm2835-camera/Kconfig"
+ 
++source "drivers/staging/vc04_services/bcm2835-codec/Kconfig"
++
+ source "drivers/staging/vc04_services/vc-sm-cma/Kconfig"
+ 
+ endif
+diff --git a/drivers/staging/vc04_services/Makefile b/drivers/staging/vc04_services/Makefile
+index 735ea76f3f2b..954d8553acfb 100644
+--- a/drivers/staging/vc04_services/Makefile
++++ b/drivers/staging/vc04_services/Makefile
+@@ -14,6 +14,7 @@ vchiq-objs := \
+ obj-$(CONFIG_SND_BCM2835)	+= bcm2835-audio/
+ obj-$(CONFIG_VIDEO_BCM2835)	+= bcm2835-camera/
+ obj-$(CONFIG_BCM_VC_SM_CMA)	+= vc-sm-cma/
++obj-$(CONFIG_VIDEO_DECODE_BCM2835) += bcm2835-codec/
+ 
+ ccflags-y += -DVCOS_VERIFY_BKPTS=1 -Idrivers/staging/vc04_services -DUSE_VCHIQ_ARM -D__VCCOREVER__=0x04000000
+ 
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/Kconfig b/drivers/staging/vc04_services/bcm2835-codec/Kconfig
+new file mode 100644
+index 000000000000..6bbb2a3ba10b
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/Kconfig
+@@ -0,0 +1,11 @@
++config VIDEO_DECODE_BCM2835
++	tristate "BCM2835 Video Decode support"
++	depends on MEDIA_SUPPORT
++	depends on VIDEO_V4L2 && (ARCH_BCM2835 || COMPILE_TEST)
++	select BCM2835_VCHIQ
++	select VIDEOBUF2_VMALLOC
++	select V4L2_MEM2MEM_DEV
++	help
++	  Say Y here to enable the V4L2 video decoder for
++	  Broadcom BCM2835 SoC. This operates over the VCHIQ interface
++	  to a service running on VideoCore.
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/Makefile b/drivers/staging/vc04_services/bcm2835-codec/Makefile
+new file mode 100644
+index 000000000000..4733cf2f9b5b
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/Makefile
+@@ -0,0 +1,8 @@
++# SPDX-License-Identifier: GPL-2.0
++bcm2835-codec-objs := bcm2835-v4l2-codec.o mmal-vchiq.o
++
++obj-$(CONFIG_VIDEO_DECODE_BCM2835) += bcm2835-codec.o
++
++ccflags-y += \
++	-Idrivers/staging/vc04_services \
++	-D__VCCOREVER__=0x04000000
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+new file mode 100644
+index 000000000000..99516de91603
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -0,0 +1,1398 @@
++/*
++ * A v4l2-mem2mem device that wraps the video codec MMAL component.
++ *
++ * Copyright 2018 Raspberry Pi (Trading) Ltd.
++ * Author: Dave Stevenson (dave.stevenson@raspberrypi.org)
++ *
++ * Loosely based on the vim2m virtual driver by Pawel Osciak
++ * Copyright (c) 2009-2010 Samsung Electronics Co., Ltd.
++ * Pawel Osciak, <pawel@osciak.com>
++ * Marek Szyprowski, <m.szyprowski@samsung.com>
++ *
++ * Whilst this driver uses the v4l2_mem2mem framework, it does not need the
++ * scheduling aspects, so will always take the buffers, pass them to the VPU,
++ * and then signal the job as complete.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version
++ */
++#include <linux/module.h>
++#include <linux/delay.h>
++#include <linux/fs.h>
++#include <linux/timer.h>
++#include <linux/sched.h>
++#include <linux/slab.h>
++#include <linux/of_platform.h>
++//#include <linux/platform_device.h>
++#include <linux/syscalls.h>
++
++#include <media/v4l2-mem2mem.h>
++#include <media/v4l2-device.h>
++#include <media/v4l2-ioctl.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-event.h>
++#include <media/videobuf2-dma-contig.h>
++
++#include "mmal-msg.h"
++#include "mmal-encodings.h"
++#include "mmal-parameters.h"
++#include "mmal-vchiq.h"
++
++MODULE_DESCRIPTION("BCM2835 codec V4L2 driver");
++MODULE_AUTHOR("Dave Stevenson, <dave.stevenson@raspberrypi.org>");
++MODULE_LICENSE("GPL");
++MODULE_VERSION("0.0.1");
++
++static unsigned debug;
++module_param(debug, uint, 0644);
++MODULE_PARM_DESC(debug, "activates debug info");
++
++#define BCM2835_V4L2_CODEC_MODULE_NAME "bcm2835-v4l2-codec"
++
++#define MIN_W 32
++#define MIN_H 32
++#define MAX_W 1920
++#define MAX_H 1088
++#define DIM_ALIGN_MASK 7 /* 8-byte alignment for line length */
++
++/* Flags that indicate a format can be used for capture/output */
++#define MEM2MEM_CAPTURE	(1 << 0)
++#define MEM2MEM_OUTPUT	(1 << 1)
++
++#define MEM2MEM_NAME		"bcm2835_codec"
++
++/* Per queue */
++#define MEM2MEM_DEF_NUM_BUFS	VIDEO_MAX_FRAME
++
++/* Default transaction time in msec */
++#define MEM2MEM_DEF_TRANSTIME	400
++
++#define dprintk(dev, fmt, arg...) \
++	v4l2_dbg(1, debug, &dev->v4l2_dev, "%s: " fmt, __func__, ## arg)
++
++
++struct bcm2835_codec_fmt {
++	u32	fourcc;
++	int	depth;
++	int	bytesperline_align;
++	u32	flags;
++	u32	mmal_fmt;
++	bool	decode_only;
++};
++
++/* Supported raw pixel formats. */
++static struct bcm2835_codec_fmt raw_formats[] = {
++	{
++		.fourcc	= V4L2_PIX_FMT_YUV420,
++		.depth	= 8,
++		.bytesperline_align = 32,
++		.flags = 0,
++		.mmal_fmt = MMAL_ENCODING_I420,
++	},
++};
++
++/* Supported encoded formats. Those supported for both encode and decode
++ * must come first, with those only supported for decode coming after (there
++ * are no formats supported for encode only).
++ */
++static struct bcm2835_codec_fmt encoded_formats[] = {
++	{
++		.fourcc	= V4L2_PIX_FMT_H264,
++		.depth	= 0,
++		.flags = V4L2_FMT_FLAG_COMPRESSED,
++		.mmal_fmt = MMAL_ENCODING_H264,
++		.decode_only = false,
++	}, {
++		.fourcc	= V4L2_PIX_FMT_MJPEG,
++		.depth	= 0,
++		.flags = V4L2_FMT_FLAG_COMPRESSED,
++		.mmal_fmt = MMAL_ENCODING_MJPEG,
++		.decode_only = false,
++	}, {
++		.fourcc	= V4L2_PIX_FMT_MPEG4,
++		.depth	= 0,
++		.flags = V4L2_FMT_FLAG_COMPRESSED,
++		.mmal_fmt = MMAL_ENCODING_MP4V,
++		.decode_only = true,
++	}, {
++		.fourcc	= V4L2_PIX_FMT_H263,
++		.depth	= 0,
++		.flags = V4L2_FMT_FLAG_COMPRESSED,
++		.mmal_fmt = MMAL_ENCODING_H263,
++		.decode_only = true,
++	}, {
++		.fourcc	= V4L2_PIX_FMT_MPEG2,
++		.depth	= 0,
++		.flags = V4L2_FMT_FLAG_COMPRESSED,
++		.mmal_fmt = MMAL_ENCODING_MP2V,
++		.decode_only = true,
++	},
++};
++
++struct bcm2835_codec_fmt_list {
++	struct bcm2835_codec_fmt *list;
++	unsigned int num_entries;
++};
++
++#define RAW_LIST	0
++#define ENCODED_LIST	1
++
++struct bcm2835_codec_fmt_list formats[] = {
++	{
++		.list = raw_formats,
++		.num_entries = ARRAY_SIZE(raw_formats),
++	}, {
++		.list = encoded_formats,
++		.num_entries = ARRAY_SIZE(encoded_formats),
++	},
++};
++
++/* Per-queue, driver-specific private data */
++struct bcm2835_codec_q_data {
++	unsigned int		width;
++	unsigned int		height;
++	unsigned int		bytesperline;
++	unsigned int		sizeimage;
++	unsigned int		sequence;
++	struct bcm2835_codec_fmt	*fmt;
++};
++
++enum {
++	V4L2_M2M_SRC = 0,
++	V4L2_M2M_DST = 1,
++};
++
++static inline struct bcm2835_codec_fmt_list *get_format_list(bool decode,
++							     bool capture)
++{
++	return 	decode ^ capture ? &formats[ENCODED_LIST] : &formats[RAW_LIST];
++
++}
++
++static struct bcm2835_codec_fmt *get_default_format(bool decode, bool capture)
++{
++	return &get_format_list(decode, capture)->list[0];
++
++}
++static struct bcm2835_codec_fmt *find_format(struct v4l2_format *f, bool decode,
++					     bool capture)
++{
++	struct bcm2835_codec_fmt *fmt;
++	unsigned int k;
++	struct bcm2835_codec_fmt_list *fmts = get_format_list(decode, capture);
++
++	for (k = 0; k < fmts->num_entries; k++) {
++		fmt = &fmts->list[k];
++		if (fmt->fourcc == f->fmt.pix.pixelformat)
++			break;
++	}
++
++	/* Some formats are only supported for decoding, not encoding. */
++	if (!decode && fmts->list[k].decode_only)
++		return NULL;
++
++	if (k == fmts->num_entries)
++		return NULL;
++
++	return &fmts->list[k];
++}
++
++struct bcm2835_codec_dev {
++	struct platform_device *pdev;
++
++	/* v4l2 devices */
++	struct v4l2_device	v4l2_dev;
++	struct video_device	vfd;
++	struct mutex		dev_mutex;
++	atomic_t		num_inst;
++
++	/* allocated mmal instance and components */
++	bool			decode;	 /* Is this instance a decoder? */
++	struct vchiq_mmal_instance	*instance;
++
++	struct {
++		/* number of frames remaining which driver should capture */
++		unsigned int  frame_count;
++		/* last frame completion */
++		struct completion  frame_cmplt;
++
++	} capture;
++	struct v4l2_m2m_dev	*m2m_dev;
++};
++
++
++struct bcm2835_codec_ctx {
++	struct v4l2_fh		fh;
++	struct bcm2835_codec_dev	*dev;
++
++	struct v4l2_ctrl_handler hdl;
++
++	struct vchiq_mmal_component  *component;
++	bool component_enabled;
++
++	enum v4l2_colorspace	colorspace;
++	enum v4l2_ycbcr_encoding ycbcr_enc;
++	enum v4l2_xfer_func	xfer_func;
++	enum v4l2_quantization	quant;
++
++	/* Source and destination queue data */
++	struct bcm2835_codec_q_data   q_data[2];
++
++	bool aborting;
++	int num_ip_buffers;
++	int num_op_buffers;
++};
++
++static inline struct bcm2835_codec_ctx *file2ctx(struct file *file)
++{
++	return container_of(file->private_data, struct bcm2835_codec_ctx, fh);
++}
++
++static struct bcm2835_codec_q_data *get_q_data(struct bcm2835_codec_ctx *ctx,
++					       enum v4l2_buf_type type)
++{
++	switch (type) {
++	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
++		return &ctx->q_data[V4L2_M2M_SRC];
++	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
++		return &ctx->q_data[V4L2_M2M_DST];
++	default:
++		BUG();
++	}
++	return NULL;
++}
++
++static struct vchiq_mmal_port *get_port_data(struct bcm2835_codec_ctx *ctx,
++					     enum v4l2_buf_type type)
++{
++	switch (type) {
++	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
++		return &ctx->component->input[0];
++	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
++		return &ctx->component->output[0];
++	default:
++		BUG();
++	}
++	return NULL;
++}
++
++/*
++ * mem2mem callbacks
++ */
++
++/**
++ * job_ready() - check whether an instance is ready to be scheduled to run
++ */
++static int job_ready(void *priv)
++{
++	struct bcm2835_codec_ctx *ctx = priv;
++
++	if (!v4l2_m2m_num_src_bufs_ready(ctx->fh.m2m_ctx) &&
++	    !v4l2_m2m_num_dst_bufs_ready(ctx->fh.m2m_ctx)) {
++		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,
++			 "Not enough buffers available\n");
++		return 0;
++	}
++
++	return 1;
++}
++
++static void job_abort(void *priv)
++{
++	struct bcm2835_codec_ctx *ctx = priv;
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s\n", __func__);
++	/* Will cancel the transaction in the next interrupt handler */
++	ctx->aborting = 1;
++}
++
++static void setup_mmal_port_format(struct bcm2835_codec_q_data *q_data,
++				   struct vchiq_mmal_port *port)
++{
++	port->format.encoding = q_data->fmt->mmal_fmt;
++	port->es.video.width = ALIGN(q_data->width, 32);
++	port->es.video.height = ALIGN(q_data->height, 16);
++	port->es.video.crop.x = 0;
++	port->es.video.crop.y = 0;
++	port->es.video.crop.width = q_data->width;
++	port->es.video.crop.height = q_data->height;
++	port->es.video.frame_rate.num = 0;
++	port->es.video.frame_rate.den = 1;
++};
++
++static void ip_buffer_cb(struct vchiq_mmal_instance *instance,
++			 struct vchiq_mmal_port *port, int status,
++			 struct mmal_buffer *mmal_buf)
++{
++	struct bcm2835_codec_ctx *ctx = port->cb_ctx/*, *curr_ctx*/;
++	struct m2m_mmal_buffer *buf =
++			container_of(mmal_buf, struct m2m_mmal_buffer, mmal);
++
++	v4l2_err(&ctx->dev->v4l2_dev, "%s: length %lu, flags %x\n", __func__,
++		 mmal_buf->length, mmal_buf->mmal_flags);
++
++	if (status != 0) {
++		/* error in transfer */
++		if (buf) {
++			/* there was a buffer with the error so return it */
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: status is %d - ERROR\n",
++				 __func__, status);
++			vb2_buffer_done(&buf->m2m.vb.vb2_buf,
++					VB2_BUF_STATE_ERROR);
++		}
++		return;
++	}
++
++	v4l2_err(&ctx->dev->v4l2_dev, "%s: no error. Return buffer %p\n",
++		 __func__, &buf->m2m.vb.vb2_buf);
++	vb2_buffer_done(&buf->m2m.vb.vb2_buf, VB2_BUF_STATE_DONE);
++
++	ctx->num_ip_buffers++;
++	v4l2_err(&ctx->dev->v4l2_dev, "%s: done\n", __func__);
++}
++
++static void op_buffer_cb(struct vchiq_mmal_instance *instance,
++			 struct vchiq_mmal_port *port, int status,
++			 struct mmal_buffer *mmal_buf)
++{
++	struct bcm2835_codec_ctx *ctx = port->cb_ctx;
++
++	v4l2_err(&ctx->dev->v4l2_dev, "%s: length %lu, flags %x\n", __func__,
++		 mmal_buf->length, mmal_buf->mmal_flags);
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,
++		 "%s: status:%d, buf:%p, length:%lu, flags %u, pts %lld\n",
++		 __func__, status, NULL, mmal_buf->length, mmal_buf->mmal_flags,
++		 mmal_buf->pts);
++
++	if (status != 0) {
++		/* error in transfer */
++		if (mmal_buf->vb2) {
++			/* there was a buffer with the error so return it */
++			vb2_buffer_done(&mmal_buf->vb2->vb2_buf,
++					VB2_BUF_STATE_ERROR);
++		} else {
++			v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,
++				 "%s: Error (%d) but no vb2 buf!!!\n", __func__,
++				 status);
++		}
++		return;
++	}
++
++	if (mmal_buf->length == 0) {
++		/* stream ended */
++		if (mmal_buf->vb2) {
++			/* this should only ever happen if the port is
++			 * disabled and there are buffers still queued
++			 */
++			pr_debug("%s: Empty buffer", __func__);
++			vb2_buffer_done(&mmal_buf->vb2->vb2_buf,
++					VB2_BUF_STATE_ERROR);
++		} else {
++			/* signal frame completion */
++			//complete(&dev->capture.frame_cmplt);
++			v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,
++				 "%s: Empty buffer but no vb2 buf!!!",
++				 __func__);
++		}
++		return;
++	}
++
++	mmal_buf->vb2->vb2_buf.timestamp = mmal_buf->pts;
++
++	vb2_set_plane_payload(&mmal_buf->vb2->vb2_buf, 0, mmal_buf->length);
++	if (mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_KEYFRAME)
++		mmal_buf->vb2->flags |= V4L2_BUF_FLAG_KEYFRAME;
++
++	vb2_buffer_done(&mmal_buf->vb2->vb2_buf, VB2_BUF_STATE_DONE);
++	ctx->num_op_buffers++;
++}
++
++/* vb2_to_mmal_buffer() - converts vb2 buffer header to MMAL
++ *
++ * Copies all the required fields from a VB2 buffer to the MMAL buffer header,
++ * ready for sending to the VPU.
++ */
++static void vb2_to_mmal_buffer(struct m2m_mmal_buffer *buf)
++{
++	buf->mmal.mmal_flags = 0;
++	if (buf->mmal.vb2->flags & V4L2_BUF_FLAG_KEYFRAME)
++		buf->mmal.mmal_flags |= MMAL_BUFFER_HEADER_FLAG_KEYFRAME;
++
++	buf->mmal.length = buf->mmal.vb2->vb2_buf.planes[0].bytesused;
++	buf->mmal.pts = buf->mmal.vb2->vb2_buf.timestamp;
++	buf->mmal.dts = MMAL_TIME_UNKNOWN;
++}
++
++/* device_run() - prepares and starts the device
++ *
++ * This simulates all the immediate preparations required before starting
++ * a device. This will be called by the framework when it decides to schedule
++ * a particular instance.
++ */
++static void device_run(void *priv)
++{
++	struct bcm2835_codec_ctx *ctx = priv;
++	struct bcm2835_codec_dev *dev = ctx->dev;
++	struct vb2_v4l2_buffer *src_buf, *dst_buf;
++	struct m2m_mmal_buffer *src_m2m_buf, *dst_m2m_buf;
++	struct v4l2_m2m_buffer *m2m;
++	int ret;
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: off we go\n", __func__);
++
++	src_buf = v4l2_m2m_buf_remove(&ctx->fh.m2m_ctx->out_q_ctx);
++	if (src_buf) {
++		m2m = container_of(src_buf, struct v4l2_m2m_buffer, vb);
++		src_m2m_buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
++		vb2_to_mmal_buffer(src_m2m_buf);
++
++		ret = vchiq_mmal_submit_buffer(dev->instance,
++					       &ctx->component->input[0],
++					       &src_m2m_buf->mmal);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed submitting ip buffer\n",
++				 __func__);
++	}
++
++	dst_buf = v4l2_m2m_buf_remove(&ctx->fh.m2m_ctx->cap_q_ctx);
++	if (dst_buf) {
++		m2m = container_of(dst_buf, struct v4l2_m2m_buffer, vb);
++		dst_m2m_buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
++		vb2_to_mmal_buffer(dst_m2m_buf);
++
++		ret = vchiq_mmal_submit_buffer(dev->instance,
++					       &ctx->component->output[0],
++					       &dst_m2m_buf->mmal);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed submitting op buffer\n",
++				 __func__);
++	}
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Submitted src %p, dst %p\n",
++		 __func__, src_m2m_buf, dst_m2m_buf);
++
++	/* Complete the job here. */
++	v4l2_m2m_job_finish(ctx->dev->m2m_dev, ctx->fh.m2m_ctx);
++}
++
++/*
++ * video ioctls
++ */
++static int vidioc_querycap(struct file *file, void *priv,
++			   struct v4l2_capability *cap)
++{
++	strncpy(cap->driver, MEM2MEM_NAME, sizeof(cap->driver) - 1);
++	strncpy(cap->card, MEM2MEM_NAME, sizeof(cap->card) - 1);
++	snprintf(cap->bus_info, sizeof(cap->bus_info),
++			"platform:%s", MEM2MEM_NAME);
++	cap->device_caps = V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING;
++	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
++	return 0;
++}
++
++static int enum_fmt(struct v4l2_fmtdesc *f, bool decode, bool capture)
++{
++	struct bcm2835_codec_fmt *fmt;
++	struct bcm2835_codec_fmt_list *fmts = get_format_list(decode, capture);
++
++	if (f->index < fmts->num_entries) {
++		/* Format found */
++		/* Check format isn't a decode only format when encoding */
++		if (!decode &&
++		    fmts->list[f->index].flags & V4L2_FMT_FLAG_COMPRESSED &&
++		    fmts->list[f->index].decode_only)
++			return -EINVAL;
++
++		fmt = &fmts->list[f->index];
++		f->pixelformat = fmt->fourcc;
++		f->flags = fmt->flags;
++		return 0;
++	}
++
++	/* Format not found */
++	return -EINVAL;
++}
++
++static int vidioc_enum_fmt_vid_cap(struct file *file, void *priv,
++				   struct v4l2_fmtdesc *f)
++{
++	struct bcm2835_codec_ctx *ctx = file2ctx(file);
++	return enum_fmt(f, ctx->dev->decode, true);
++}
++
++static int vidioc_enum_fmt_vid_out(struct file *file, void *priv,
++				   struct v4l2_fmtdesc *f)
++{
++	struct bcm2835_codec_ctx *ctx = file2ctx(file);
++	return enum_fmt(f, ctx->dev->decode, false);
++}
++
++static int vidioc_g_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f)
++{
++	struct vb2_queue *vq;
++	struct bcm2835_codec_q_data *q_data;
++
++	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, f->type);
++	if (!vq)
++		return -EINVAL;
++
++	q_data = get_q_data(ctx, f->type);
++
++	f->fmt.pix.width	= q_data->width;
++	f->fmt.pix.height	= q_data->height;
++	f->fmt.pix.field	= V4L2_FIELD_NONE;
++	f->fmt.pix.pixelformat	= q_data->fmt->fourcc;
++	f->fmt.pix.bytesperline	= q_data->bytesperline;
++	f->fmt.pix.sizeimage	= q_data->sizeimage;
++	f->fmt.pix.colorspace	= ctx->colorspace;
++	f->fmt.pix.xfer_func	= ctx->xfer_func;
++	f->fmt.pix.ycbcr_enc	= ctx->ycbcr_enc;
++	f->fmt.pix.quantization	= ctx->quant;
++
++	return 0;
++}
++
++static int vidioc_g_fmt_vid_out(struct file *file, void *priv,
++				struct v4l2_format *f)
++{
++	return vidioc_g_fmt(file2ctx(file), f);
++}
++
++static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
++				struct v4l2_format *f)
++{
++	return vidioc_g_fmt(file2ctx(file), f);
++}
++
++static int vidioc_try_fmt(struct v4l2_format *f, struct bcm2835_codec_fmt *fmt)
++{
++	/* V4L2 specification suggests the driver corrects the format struct
++	 * if any of the dimensions is unsupported */
++	if (f->fmt.pix.height < MIN_H)
++		f->fmt.pix.height = MIN_H;
++	else if (f->fmt.pix.height > MAX_H)
++		f->fmt.pix.height = MAX_H;
++
++	if (f->fmt.pix.width < MIN_W)
++		f->fmt.pix.width = MIN_W;
++	else if (f->fmt.pix.width > MAX_W)
++		f->fmt.pix.width = MAX_W;
++
++	f->fmt.pix.width &= ~DIM_ALIGN_MASK;
++	if (!fmt->flags & V4L2_FMT_FLAG_COMPRESSED)
++		f->fmt.pix.bytesperline =
++				ALIGN((f->fmt.pix.width * fmt->depth) >> 3,
++				      fmt->bytesperline_align);
++	else
++		f->fmt.pix.bytesperline = 0;
++	f->fmt.pix.sizeimage = f->fmt.pix.height * f->fmt.pix.bytesperline;
++	f->fmt.pix.field = V4L2_FIELD_NONE;
++
++	return 0;
++}
++
++static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
++				  struct v4l2_format *f)
++{
++	struct bcm2835_codec_fmt *fmt;
++	struct bcm2835_codec_ctx *ctx = file2ctx(file);
++
++	fmt = find_format(f, ctx->dev->decode, true);
++	if (!fmt) {
++		f->fmt.pix.pixelformat = get_default_format(ctx->dev->decode,
++							    true)->fourcc;
++		fmt = find_format(f, ctx->dev->decode, true);
++	}
++
++	f->fmt.pix.colorspace = ctx->colorspace;
++	f->fmt.pix.xfer_func = ctx->xfer_func;
++	f->fmt.pix.ycbcr_enc = ctx->ycbcr_enc;
++	f->fmt.pix.quantization = ctx->quant;
++
++	return vidioc_try_fmt(f, fmt);
++}
++
++static int vidioc_try_fmt_vid_out(struct file *file, void *priv,
++				  struct v4l2_format *f)
++{
++	struct bcm2835_codec_fmt *fmt;
++	struct bcm2835_codec_ctx *ctx = file2ctx(file);
++
++	fmt = find_format(f, ctx->dev->decode, false);
++	if (!fmt) {
++		f->fmt.pix.pixelformat = get_default_format(ctx->dev->decode,
++							    false)->fourcc;
++		fmt = find_format(f, ctx->dev->decode, false);
++	}
++
++	if (!f->fmt.pix.colorspace)
++		f->fmt.pix.colorspace = V4L2_COLORSPACE_REC709;
++
++	return vidioc_try_fmt(f, fmt);
++}
++
++static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f)
++{
++	struct bcm2835_codec_q_data *q_data;
++	struct vb2_queue *vq;
++	struct vchiq_mmal_port *port;
++	int ret;
++
++	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, f->type);
++	if (!vq)
++		return -EINVAL;
++
++	q_data = get_q_data(ctx, f->type);
++	if (!q_data)
++		return -EINVAL;
++
++	port = get_port_data(ctx, vq->type);
++	if (!port)
++		return -EINVAL;
++
++	if (vb2_is_busy(vq)) {
++		v4l2_err(&ctx->dev->v4l2_dev, "%s queue busy\n", __func__);
++		return -EBUSY;
++	}
++
++	q_data->fmt		= find_format(f, ctx->dev->decode,
++					      f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE);
++	q_data->width		= f->fmt.pix.width;
++	q_data->height		= f->fmt.pix.height;
++
++	setup_mmal_port_format(q_data, port);
++
++	ret = vchiq_mmal_port_set_format(ctx->dev->instance, port);
++	if (ret)
++		v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed vchiq_mmal_port_set_format on port, ret %d\n",
++			 __func__, ret);
++	q_data->sizeimage	= port->minimum_buffer.size;
++
++
++	dprintk(ctx->dev,
++		"Setting format for type %d, wxh: %dx%d, fmt: %d\n",
++		f->type, q_data->width, q_data->height, q_data->fmt->fourcc);
++
++	return 0;
++}
++
++static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
++				struct v4l2_format *f)
++{
++	int ret;
++
++	ret = vidioc_try_fmt_vid_cap(file, priv, f);
++	if (ret)
++		return ret;
++
++	return vidioc_s_fmt(file2ctx(file), f);
++}
++
++static int vidioc_s_fmt_vid_out(struct file *file, void *priv,
++				struct v4l2_format *f)
++{
++	struct bcm2835_codec_ctx *ctx = file2ctx(file);
++	int ret;
++
++	ret = vidioc_try_fmt_vid_out(file, priv, f);
++	if (ret)
++		return ret;
++
++	ret = vidioc_s_fmt(file2ctx(file), f);
++	if (!ret) {
++		ctx->colorspace = f->fmt.pix.colorspace;
++		ctx->xfer_func = f->fmt.pix.xfer_func;
++		ctx->ycbcr_enc = f->fmt.pix.ycbcr_enc;
++		ctx->quant = f->fmt.pix.quantization;
++	}
++	return ret;
++}
++
++static int bcm2835_codec_s_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct bcm2835_codec_ctx *ctx =
++		container_of(ctrl->handler, struct bcm2835_codec_ctx, hdl);
++	int ret;
++
++	switch (ctrl->id) {
++	case V4L2_CID_MPEG_VIDEO_BITRATE:
++		v4l2_err(&ctx->dev->v4l2_dev, "Setting bitrate to %d\n",
++			 ctrl->val);
++		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
++						    &ctx->component->output[0],
++						    MMAL_PARAMETER_VIDEO_BIT_RATE,
++						    &ctrl->val,
++						    sizeof(ctrl->val));
++		break;
++
++	case V4L2_CID_MPEG_VIDEO_BITRATE_MODE: {
++		u32 bitrate_mode;
++
++		v4l2_err(&ctx->dev->v4l2_dev, "Setting bitrate mode to %d\n",
++			 ctrl->val);
++
++		switch (ctrl->val) {
++		default:
++		case V4L2_MPEG_VIDEO_BITRATE_MODE_VBR:
++			bitrate_mode = MMAL_VIDEO_RATECONTROL_VARIABLE;
++			break;
++		case V4L2_MPEG_VIDEO_BITRATE_MODE_CBR:
++			bitrate_mode = MMAL_VIDEO_RATECONTROL_CONSTANT;
++			break;
++		}
++
++		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
++						    &ctx->component->output[0],
++						    MMAL_PARAMETER_RATECONTROL,
++						    &bitrate_mode,
++						    sizeof(bitrate_mode));
++		break;
++	}
++	case V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER:
++		v4l2_err(&ctx->dev->v4l2_dev, "Setting repeat seq header to %d\n",
++			 ctrl->val);
++		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
++						    &ctx->component->output[0],
++						    MMAL_PARAMETER_VIDEO_ENCODE_INLINE_HEADER,
++						    &ctrl->val,
++						    sizeof(ctrl->val));
++		break;
++
++	case V4L2_CID_MPEG_VIDEO_H264_I_PERIOD:
++		v4l2_err(&ctx->dev->v4l2_dev, "Setting intra-I period to %d\n",
++			 ctrl->val);
++		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
++						    &ctx->component->output[0],
++						    MMAL_PARAMETER_INTRAPERIOD,
++						    &ctrl->val,
++						    sizeof(ctrl->val));
++		break;
++
++	default:
++		v4l2_err(&ctx->dev->v4l2_dev, "Invalid control\n");
++		return -EINVAL;
++	}
++
++	if (ret)
++		v4l2_err(&ctx->dev->v4l2_dev, "Failed setting ctrl %08x, ret %d\n",
++			 ctrl->id, ret);
++	return ret ? -EINVAL : 0;
++}
++
++static const struct v4l2_ctrl_ops bcm2835_codec_ctrl_ops = {
++	.s_ctrl = bcm2835_codec_s_ctrl,
++};
++
++
++static const struct v4l2_ioctl_ops bcm2835_codec_ioctl_ops = {
++	.vidioc_querycap	= vidioc_querycap,
++
++	.vidioc_enum_fmt_vid_cap = vidioc_enum_fmt_vid_cap,
++	.vidioc_g_fmt_vid_cap	= vidioc_g_fmt_vid_cap,
++	.vidioc_try_fmt_vid_cap	= vidioc_try_fmt_vid_cap,
++	.vidioc_s_fmt_vid_cap	= vidioc_s_fmt_vid_cap,
++
++	.vidioc_enum_fmt_vid_out = vidioc_enum_fmt_vid_out,
++	.vidioc_g_fmt_vid_out	= vidioc_g_fmt_vid_out,
++	.vidioc_try_fmt_vid_out	= vidioc_try_fmt_vid_out,
++	.vidioc_s_fmt_vid_out	= vidioc_s_fmt_vid_out,
++
++	.vidioc_reqbufs		= v4l2_m2m_ioctl_reqbufs,
++	.vidioc_querybuf	= v4l2_m2m_ioctl_querybuf,
++	.vidioc_qbuf		= v4l2_m2m_ioctl_qbuf,
++	.vidioc_dqbuf		= v4l2_m2m_ioctl_dqbuf,
++	.vidioc_prepare_buf	= v4l2_m2m_ioctl_prepare_buf,
++	.vidioc_create_bufs	= v4l2_m2m_ioctl_create_bufs,
++	.vidioc_expbuf		= v4l2_m2m_ioctl_expbuf,
++
++	.vidioc_streamon	= v4l2_m2m_ioctl_streamon,
++	.vidioc_streamoff	= v4l2_m2m_ioctl_streamoff,
++
++	.vidioc_subscribe_event = v4l2_ctrl_subscribe_event,
++	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
++};
++
++
++/*
++ * Queue operations
++ */
++
++static int bcm2835_codec_queue_setup(struct vb2_queue *vq,
++				unsigned int *nbuffers, unsigned int *nplanes,
++				unsigned int sizes[], struct device *alloc_devs[])
++{
++	struct bcm2835_codec_ctx *ctx = vb2_get_drv_priv(vq);
++	struct bcm2835_codec_q_data *q_data;
++	struct vchiq_mmal_port *port;
++	unsigned int size;
++
++	q_data = get_q_data(ctx, vq->type);
++	port = get_port_data(ctx, vq->type);
++
++	size = port->minimum_buffer.size;
++
++	if (*nplanes)
++		return sizes[0] < size ? -EINVAL : 0;
++
++	*nplanes = 1;
++
++	sizes[0] = size;
++	port->current_buffer.size = size;
++
++	if (*nbuffers < port->minimum_buffer.num)
++		*nbuffers = port->minimum_buffer.num;
++	port->current_buffer.num = *nbuffers;
++
++
++	dprintk(ctx->dev, "get %d buffer(s) of size %d each.\n", *nbuffers, size);
++
++	return 0;
++}
++
++static int bcm2835_codec_buf_init(struct vb2_buffer *vb)
++{
++	struct bcm2835_codec_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
++	struct vb2_v4l2_buffer *vb2 = to_vb2_v4l2_buffer(vb);
++	struct v4l2_m2m_buffer *m2m = container_of(vb2, struct v4l2_m2m_buffer, vb);
++	struct m2m_mmal_buffer *buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: ctx:%p, vb %p\n",
++		 __func__, ctx, vb);
++	buf->mmal.buffer = vb2_plane_vaddr(&buf->m2m.vb.vb2_buf, 0);
++	buf->mmal.buffer_size = vb2_plane_size(&buf->m2m.vb.vb2_buf, 0);
++	buf->mmal.vb2 = &buf->m2m.vb;
++
++	mmal_vchi_buffer_init(ctx->dev->instance, &buf->mmal);
++
++	return 0;
++}
++
++static int bcm2835_codec_buf_prepare(struct vb2_buffer *vb)
++{
++	struct bcm2835_codec_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
++	struct bcm2835_codec_q_data *q_data;
++	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
++	struct v4l2_m2m_buffer *m2m = container_of(vbuf, struct v4l2_m2m_buffer, vb);
++	struct m2m_mmal_buffer *buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
++	int ret;
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: type: %d ptr %p\n", __func__, vb->vb2_queue->type, vb);
++
++	q_data = get_q_data(ctx, vb->vb2_queue->type);
++	if (V4L2_TYPE_IS_OUTPUT(vb->vb2_queue->type)) {
++		if (vbuf->field == V4L2_FIELD_ANY)
++			vbuf->field = V4L2_FIELD_NONE;
++		if (vbuf->field != V4L2_FIELD_NONE) {
++			dprintk(ctx->dev, "%s field isn't supported\n",
++					__func__);
++			return -EINVAL;
++		}
++	}
++
++	if (vb2_plane_size(vb, 0) < q_data->sizeimage) {
++		dprintk(ctx->dev, "%s data will not fit into plane (%lu < %lu)\n",
++				__func__, vb2_plane_size(vb, 0), (long)q_data->sizeimage);
++		return -EINVAL;
++	}
++
++	vb2_set_plane_payload(vb, 0, q_data->sizeimage);
++
++#if defined(CONFIG_BCM_VC_SM_CMA)
++	/*
++	 * Two niggles:
++	 * 1 - We want to do this at init, but vb2_core_expbuf checks that the
++	 * index < q->num_buffers, and q->num_buffers only gets updated once
++	 * all the buffers are allocated.
++	 *
++	 * 2 - videobuf2 only exposes dmabufs as an fd via vb2_core_expbuf.
++	 * Ideally we'd like the struct dma_buf directly, but can't get hold of
++	 * it, so have to accept the fd and work with it.
++	 */
++	if (!buf->mmal.dma_buf) {
++		int fd;
++
++		ret = vb2_core_expbuf(vb->vb2_queue, &fd,
++				      vb->vb2_queue->type, vb->index, 0,
++				      O_CLOEXEC);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed to expbuf idx %d, ret %d\n",
++				 __func__, vb->index, ret);
++		buf->mmal.dma_buf = dma_buf_get(fd);
++		v4l2_err(&ctx->dev->v4l2_dev, "%s: Given dma_buf fd %d, %p\n",
++			 __func__, fd, buf->mmal.dma_buf);
++		/*
++		 * Release the fd (and the associated refcount) as we now have
++		 * a ref to the dma_buf
++		 */
++		sys_close(fd);
++	}
++#else
++	ret = 0;
++#endif
++
++	return ret;
++}
++
++static void bcm2835_codec_buf_queue(struct vb2_buffer *vb)
++{
++	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
++	struct bcm2835_codec_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: type: %d ptr %p vbuf->flags %u, seq %u, bytesused %u\n",
++		__func__, vb->vb2_queue->type, vb, vbuf->flags, vbuf->sequence, vb->planes[0].bytesused);
++	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, vbuf);
++}
++
++static void bcm2835_codec_buffer_cleanup(struct vb2_buffer *vb)
++{
++	struct bcm2835_codec_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
++	struct vb2_v4l2_buffer *vb2 = to_vb2_v4l2_buffer(vb);
++	struct v4l2_m2m_buffer *m2m = container_of(vb2, struct v4l2_m2m_buffer, vb);
++	struct m2m_mmal_buffer *buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: ctx:%p, vb %p\n",
++		 __func__, ctx, vb);
++
++	mmal_vchi_buffer_cleanup(&buf->mmal);
++
++#if defined(CONFIG_BCM_VC_SM_CMA)
++	if (buf->mmal.dma_buf)
++		dma_buf_put(buf->mmal.dma_buf);
++#endif
++}
++
++static int bcm2835_codec_start_streaming(struct vb2_queue *q, unsigned count)
++{
++	struct bcm2835_codec_ctx *ctx = vb2_get_drv_priv(q);
++	struct bcm2835_codec_dev *dev = ctx->dev;
++	struct bcm2835_codec_q_data *q_data = get_q_data(ctx, q->type);
++	int ret;
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: type: %d count %d\n", __func__, q->type, count);
++	q_data->sequence = 0;
++
++	if (!ctx->component_enabled) {
++		ret = vchiq_mmal_component_enable(dev->instance,
++						  ctx->component);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling component, ret %d\n",
++				__func__, ret);
++		ctx->component_enabled = true;
++	}
++
++	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
++		ctx->component->input[0].cb_ctx = ctx;
++		ret = vchiq_mmal_port_enable(dev->instance,
++					     &ctx->component->input[0],
++					     ip_buffer_cb);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling i/p port, ret %d\n",
++				__func__, ret);
++	} else {
++		ctx->component->output[0].cb_ctx = ctx;
++		ret = vchiq_mmal_port_enable(dev->instance,
++					     &ctx->component->output[0],
++					     op_buffer_cb);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
++				__func__, ret);
++	}
++	return ret;
++}
++
++static void bcm2835_codec_stop_streaming(struct vb2_queue *q)
++{
++	struct bcm2835_codec_ctx *ctx = vb2_get_drv_priv(q);
++	struct bcm2835_codec_dev *dev = ctx->dev;
++	struct vb2_v4l2_buffer *vbuf;
++	int ret;
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: type: %d - return buffers\n",
++		 __func__, q->type);
++	for (;;) {
++		if (V4L2_TYPE_IS_OUTPUT(q->type))
++			vbuf = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
++		else
++			vbuf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
++		if (vbuf == NULL)
++			return;
++		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: return buffer %p\n",
++			 __func__, vbuf);
++
++		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
++	}
++
++	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
++		ret = vchiq_mmal_port_disable(dev->instance,
++					     &ctx->component->input[0]);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling i/p port, ret %d\n",
++				 __func__, ret);
++	} else {
++		ret = vchiq_mmal_port_disable(dev->instance,
++					     &ctx->component->output[0]);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
++				 __func__, ret);
++	}
++
++	if (!ctx->component->input[0].enabled &&
++	    !ctx->component->output[0].enabled) {
++		ret = vchiq_mmal_component_disable(dev->instance,
++						  ctx->component);
++		if (ret)
++			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling component, ret %d\n",
++				__func__, ret);
++	}
++
++	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: done\n", __func__);
++}
++
++static const struct vb2_ops bcm2835_codec_qops = {
++	.queue_setup	 = bcm2835_codec_queue_setup,
++	.buf_init	 = bcm2835_codec_buf_init,
++	.buf_prepare	 = bcm2835_codec_buf_prepare,
++	.buf_queue	 = bcm2835_codec_buf_queue,
++	.buf_cleanup	 = bcm2835_codec_buffer_cleanup,
++	.start_streaming = bcm2835_codec_start_streaming,
++	.stop_streaming  = bcm2835_codec_stop_streaming,
++	.wait_prepare	 = vb2_ops_wait_prepare,
++	.wait_finish	 = vb2_ops_wait_finish,
++};
++
++static int queue_init(void *priv, struct vb2_queue *src_vq, struct vb2_queue *dst_vq)
++{
++	struct bcm2835_codec_ctx *ctx = priv;
++	int ret;
++
++	src_vq->type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
++	src_vq->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
++	src_vq->drv_priv = ctx;
++	src_vq->buf_struct_size = sizeof(struct m2m_mmal_buffer);
++	src_vq->ops = &bcm2835_codec_qops;
++	src_vq->mem_ops = &vb2_dma_contig_memops;
++	src_vq->dev = &ctx->dev->pdev->dev;
++	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
++	src_vq->lock = &ctx->dev->dev_mutex;
++
++	ret = vb2_queue_init(src_vq);
++	if (ret)
++		return ret;
++
++	dst_vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
++	dst_vq->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
++	dst_vq->drv_priv = ctx;
++	dst_vq->buf_struct_size = sizeof(struct m2m_mmal_buffer);
++	dst_vq->ops = &bcm2835_codec_qops;
++	dst_vq->mem_ops = &vb2_dma_contig_memops;
++	dst_vq->dev = &ctx->dev->pdev->dev;
++	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
++	dst_vq->lock = &ctx->dev->dev_mutex;
++
++	return vb2_queue_init(dst_vq);
++}
++
++/*
++ * File operations
++ */
++static int bcm2835_codec_open(struct file *file)
++{
++	struct bcm2835_codec_dev *dev = video_drvdata(file);
++	struct bcm2835_codec_ctx *ctx = NULL;
++	struct v4l2_ctrl_handler *hdl;
++#if defined(CONFIG_BCM_VC_SM_CMA)
++	unsigned int enable = 1;
++#endif
++	int rc = 0;
++
++	if (mutex_lock_interruptible(&dev->dev_mutex))
++		return -ERESTARTSYS;
++	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
++	if (!ctx) {
++		rc = -ENOMEM;
++		goto open_unlock;
++	}
++
++	/* Initialise MMAL stuff first */
++	rc = vchiq_mmal_component_init(dev->instance, dev->decode ?
++					"ril.video_decode" : "ril.video_encode",
++					&ctx->component);
++	if (rc < 0)
++		return -EINVAL;
++
++#if defined(CONFIG_BCM_VC_SM_CMA)
++	vchiq_mmal_port_parameter_set(
++			dev->instance,
++			&ctx->component->input[0],
++			MMAL_PARAMETER_ZERO_COPY,
++			&enable, sizeof(enable));
++	vchiq_mmal_port_parameter_set(
++			dev->instance,
++			&ctx->component->output[0],
++			MMAL_PARAMETER_ZERO_COPY,
++			&enable, sizeof(enable));
++#endif
++	ctx->q_data[V4L2_M2M_SRC].fmt = get_default_format(dev->decode, false);
++	ctx->q_data[V4L2_M2M_SRC].width = 640;
++	ctx->q_data[V4L2_M2M_SRC].height = 480;
++
++	ctx->q_data[V4L2_M2M_DST] = ctx->q_data[V4L2_M2M_SRC];
++	ctx->q_data[V4L2_M2M_DST].fmt = get_default_format(dev->decode, true);
++
++	ctx->colorspace = V4L2_COLORSPACE_REC709;
++
++	setup_mmal_port_format(&ctx->q_data[V4L2_M2M_SRC],
++			       &ctx->component->input[0]);
++
++	setup_mmal_port_format(&ctx->q_data[V4L2_M2M_DST],
++			       &ctx->component->output[0]);
++
++	if (!dev->decode)
++		ctx->component->output[0].format.bitrate = 10 * 1000 * 1000;
++
++	rc = vchiq_mmal_port_set_format(dev->instance,
++					 &ctx->component->input[0]);
++	if (rc < 0)
++		goto destroy_component;
++	ctx->q_data[V4L2_M2M_SRC].sizeimage =
++		ctx->component->input[0].minimum_buffer.size;
++
++	rc = vchiq_mmal_port_set_format(dev->instance,
++					 &ctx->component->output[0]);
++	if (rc < 0)
++		goto destroy_component;
++	ctx->q_data[V4L2_M2M_DST].sizeimage =
++		ctx->component->output[0].minimum_buffer.size;
++
++	/* Initialise V4L2 contexts */
++	v4l2_fh_init(&ctx->fh, video_devdata(file));
++	file->private_data = &ctx->fh;
++	ctx->dev = dev;
++	hdl = &ctx->hdl;
++	if (!dev->decode) {
++		/* Encode controls */
++		v4l2_ctrl_handler_init(hdl, 4);
++
++		v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
++				  V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
++				  V4L2_MPEG_VIDEO_BITRATE_MODE_CBR, 0,
++				  V4L2_MPEG_VIDEO_BITRATE_MODE_VBR);
++		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
++				  V4L2_CID_MPEG_VIDEO_BITRATE,
++				  25 * 1000, 25 * 1000 * 1000,
++				  25 * 1000, 10 * 1000 * 1000);
++		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
++				  V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER,
++				  0, 1,
++				  1, 0);
++		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
++				  V4L2_CID_MPEG_VIDEO_H264_I_PERIOD,
++				  0, 0x7FFFFFFF,
++				  1, 60);
++		//v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
++		//		V4L2_CID_MPEG_VIDEO_H264_LEVEL, 0, 1, 1, 0);
++		//v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
++		//		V4L2_CID_MPEG_VIDEO_H264_PROFILE, 0, 1, 1, 0);
++		if (hdl->error) {
++			rc = hdl->error;
++			goto free_ctrl_handler;
++		}
++		ctx->fh.ctrl_handler = hdl;
++		v4l2_ctrl_handler_setup(hdl);
++	}
++
++	ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(dev->m2m_dev, ctx, &queue_init);
++
++	if (IS_ERR(ctx->fh.m2m_ctx)) {
++		rc = PTR_ERR(ctx->fh.m2m_ctx);
++
++		goto free_ctrl_handler;
++	}
++
++	/* Set both queues as buffered as we have buffering in the VPU. That
++	 * means that we will be scheduled whenever either an input or output
++	 * buffer is available (otherwise one of each are required).
++	 */
++	v4l2_m2m_set_src_buffered(ctx->fh.m2m_ctx, true);
++	v4l2_m2m_set_dst_buffered(ctx->fh.m2m_ctx, true);
++
++	v4l2_fh_add(&ctx->fh);
++	atomic_inc(&dev->num_inst);
++
++	v4l2_err(&dev->v4l2_dev, "Created instance: %p, m2m_ctx: %p\n",
++		ctx, ctx->fh.m2m_ctx);
++
++	mutex_unlock(&dev->dev_mutex);
++	return 0;
++
++free_ctrl_handler:
++	v4l2_ctrl_handler_free(hdl);
++
++destroy_component:
++	vchiq_mmal_component_finalise(dev->instance, ctx->component);
++	kfree(ctx);
++open_unlock:
++	mutex_unlock(&dev->dev_mutex);
++	return rc;
++}
++
++static int bcm2835_codec_release(struct file *file)
++{
++	struct bcm2835_codec_dev *dev = video_drvdata(file);
++	struct bcm2835_codec_ctx *ctx = file2ctx(file);
++
++	v4l2_err(&dev->v4l2_dev, "%s: Releasing instance %p\n", __func__, ctx);
++
++	v4l2_fh_del(&ctx->fh);
++	v4l2_fh_exit(&ctx->fh);
++	v4l2_ctrl_handler_free(&ctx->hdl);
++	v4l2_err(&dev->v4l2_dev, "%s: Releasing instance %p - waiting for mutex\n", __func__, ctx);
++	mutex_lock(&dev->dev_mutex);
++	v4l2_err(&dev->v4l2_dev, "%s: Releasing instance %p - obtained mutex\n", __func__, ctx);
++	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
++	v4l2_err(&dev->v4l2_dev, "%s: Releasing instance %p - ctx_released\n", __func__, ctx);
++
++	vchiq_mmal_component_finalise(dev->instance, ctx->component);
++
++	mutex_unlock(&dev->dev_mutex);
++	kfree(ctx);
++
++	atomic_dec(&dev->num_inst);
++	v4l2_err(&dev->v4l2_dev, "%s: Releasing instance %p - done\n", __func__, ctx);
++
++	return 0;
++}
++
++static const struct v4l2_file_operations bcm2835_codec_fops = {
++	.owner		= THIS_MODULE,
++	.open		= bcm2835_codec_open,
++	.release	= bcm2835_codec_release,
++	.poll		= v4l2_m2m_fop_poll,
++	.unlocked_ioctl	= video_ioctl2,
++	.mmap		= v4l2_m2m_fop_mmap,
++};
++
++static const struct video_device bcm2835_codec_videodev = {
++	.name		= MEM2MEM_NAME,
++	.vfl_dir	= VFL_DIR_M2M,
++	.fops		= &bcm2835_codec_fops,
++	.ioctl_ops	= &bcm2835_codec_ioctl_ops,
++	.minor		= -1,
++	.release	= video_device_release_empty,
++};
++
++static const struct v4l2_m2m_ops m2m_ops = {
++	.device_run	= device_run,
++	.job_ready	= job_ready,
++	.job_abort	= job_abort,
++};
++
++static int bcm2835_codec_probe(struct platform_device *pdev)
++{
++	struct bcm2835_codec_dev *dev;
++	struct video_device *vfd;
++	struct vchiq_mmal_instance *instance = NULL;
++	struct device_node *node = pdev->dev.of_node;
++	int ret;
++
++
++	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
++	if (!dev)
++		return -ENOMEM;
++
++	dev->pdev = pdev;
++//	spin_lock_init(&dev->irqlock);
++
++	if (of_device_is_compatible(node, "raspberrypi,bcm2835-v4l2-decoder"))
++		dev->decode = true;
++
++	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);
++	if (ret)
++		return ret;
++
++	atomic_set(&dev->num_inst, 0);
++	mutex_init(&dev->dev_mutex);
++
++	dev->vfd = bcm2835_codec_videodev;
++	vfd = &dev->vfd;
++	vfd->lock = &dev->dev_mutex;
++	vfd->v4l2_dev = &dev->v4l2_dev;
++
++	ret = video_register_device(vfd, VFL_TYPE_GRABBER, 0);
++	if (ret) {
++		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
++		goto unreg_dev;
++	}
++
++	video_set_drvdata(vfd, dev);
++	snprintf(vfd->name, sizeof(vfd->name), "%s", bcm2835_codec_videodev.name);
++	v4l2_info(&dev->v4l2_dev,
++			"Device registered as /dev/video%d\n", vfd->num);
++
++	//setup_timer(&dev->timer, device_isr, (long)dev);
++	platform_set_drvdata(pdev, dev);
++
++	dev->m2m_dev = v4l2_m2m_init(&m2m_ops);
++	if (IS_ERR(dev->m2m_dev)) {
++		v4l2_err(&dev->v4l2_dev, "Failed to init mem2mem device\n");
++		ret = PTR_ERR(dev->m2m_dev);
++		goto err_m2m;
++	}
++
++	ret = vchiq_mmal_init(&instance);
++	if (ret < 0)
++		goto err_m2m;
++	dev->instance = instance;
++
++	v4l2_err(&dev->v4l2_dev, "Loaded V4L2 %s codec\n",
++		 dev->decode ? "decode" : "encode");
++	return 0;
++
++err_m2m:
++	v4l2_m2m_release(dev->m2m_dev);
++	video_unregister_device(&dev->vfd);
++unreg_dev:
++	v4l2_device_unregister(&dev->v4l2_dev);
++
++	return ret;
++}
++
++static int bcm2835_codec_remove(struct platform_device *pdev)
++{
++	struct bcm2835_codec_dev *dev = platform_get_drvdata(pdev);
++
++	v4l2_info(&dev->v4l2_dev, "Removing " MEM2MEM_NAME);
++	v4l2_m2m_release(dev->m2m_dev);
++	//del_timer_sync(&dev->timer);
++	video_unregister_device(&dev->vfd);
++	v4l2_device_unregister(&dev->v4l2_dev);
++
++	return 0;
++}
++
++/*
++ *   Register the driver with device tree
++ */
++
++static const struct of_device_id bcm2835_codec_of_match[] = {
++	{.compatible = "raspberrypi,bcm2835-v4l2-decoder",},
++	{.compatible = "raspberrypi,bcm2835-v4l2-encoder",},
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, bcm2835_codec_of_match);
++
++static struct platform_driver bcm2835_v4l2_codec_driver = {
++	.probe = bcm2835_codec_probe,
++	.remove = bcm2835_codec_remove,
++	.driver = {
++		   .name = BCM2835_V4L2_CODEC_MODULE_NAME,
++		   .owner = THIS_MODULE,
++		   .of_match_table = bcm2835_codec_of_match,
++		   },
++};
++
++module_platform_driver(bcm2835_v4l2_codec_driver);
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-common.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-common.h
+new file mode 100644
+index 000000000000..cf22c133e857
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-common.h
+@@ -0,0 +1,79 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ *
++ * MMAL structures
++ *
++ */
++#ifndef __MMAL_COMMON_H
++#define __MMAL_COMMON_H
++
++#include <media/videobuf2-v4l2.h>
++#include <media/v4l2-mem2mem.h>
++
++#define MMAL_FOURCC(a, b, c, d) ((a) | (b << 8) | (c << 16) | (d << 24))
++#define MMAL_MAGIC MMAL_FOURCC('m', 'm', 'a', 'l')
++
++/** Special value signalling that time is not known */
++#define MMAL_TIME_UNKNOWN BIT_ULL(63)
++
++/* mapping between v4l and mmal video modes */
++struct mmal_fmt {
++	char  *name;
++	u32   fourcc;          /* v4l2 format id */
++	int   flags;           /* v4l2 flags field */
++	u32   mmal;
++	int   depth;
++	u32   mmal_component;  /* MMAL component index to be used to encode */
++	u32   ybbp;            /* depth of first Y plane for planar formats */
++	bool  remove_padding;  /* Does the GPU have to remove padding,
++				* or can we do hide padding via bytesperline.
++				*/
++};
++
++/* buffer for one frame */
++struct mmal_buffer {
++	/* list of buffers available */
++	struct list_head	list;
++
++	void *buffer; /* buffer pointer */
++	unsigned long buffer_size; /* size of allocated buffer */
++
++	void *msg_context;
++#if defined(CONFIG_BCM_VC_SM)
++	struct dma_buf *dma_buf;/* Exported dmabuf fd from videobuf2 */
++	int vcsm_handle;	/* VCSM handle having imported the dmabuf */
++	u32 vc_handle;		/* VC handle to that dmabuf */
++#endif
++
++	struct vb2_v4l2_buffer *vb2;
++
++	unsigned long length;
++	u32 mmal_flags;
++	s64 dts;
++	s64 pts;
++};
++
++struct m2m_mmal_buffer {
++	struct v4l2_m2m_buffer	m2m;
++	struct mmal_buffer 	mmal;
++};
++
++/* */
++struct mmal_colourfx {
++	s32 enable;
++	u32 u;
++	u32 v;
++};
++#endif
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-encodings.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-encodings.h
+new file mode 100644
+index 000000000000..1d86f9daad26
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-encodings.h
+@@ -0,0 +1,127 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ */
++#ifndef MMAL_ENCODINGS_H
++#define MMAL_ENCODINGS_H
++
++#define MMAL_ENCODING_H264             MMAL_FOURCC('H', '2', '6', '4')
++#define MMAL_ENCODING_H263             MMAL_FOURCC('H', '2', '6', '3')
++#define MMAL_ENCODING_MP4V             MMAL_FOURCC('M', 'P', '4', 'V')
++#define MMAL_ENCODING_MP2V             MMAL_FOURCC('M', 'P', '2', 'V')
++#define MMAL_ENCODING_MP1V             MMAL_FOURCC('M', 'P', '1', 'V')
++#define MMAL_ENCODING_WMV3             MMAL_FOURCC('W', 'M', 'V', '3')
++#define MMAL_ENCODING_WMV2             MMAL_FOURCC('W', 'M', 'V', '2')
++#define MMAL_ENCODING_WMV1             MMAL_FOURCC('W', 'M', 'V', '1')
++#define MMAL_ENCODING_WVC1             MMAL_FOURCC('W', 'V', 'C', '1')
++#define MMAL_ENCODING_VP8              MMAL_FOURCC('V', 'P', '8', ' ')
++#define MMAL_ENCODING_VP7              MMAL_FOURCC('V', 'P', '7', ' ')
++#define MMAL_ENCODING_VP6              MMAL_FOURCC('V', 'P', '6', ' ')
++#define MMAL_ENCODING_THEORA           MMAL_FOURCC('T', 'H', 'E', 'O')
++#define MMAL_ENCODING_SPARK            MMAL_FOURCC('S', 'P', 'R', 'K')
++#define MMAL_ENCODING_MJPEG            MMAL_FOURCC('M', 'J', 'P', 'G')
++
++#define MMAL_ENCODING_JPEG             MMAL_FOURCC('J', 'P', 'E', 'G')
++#define MMAL_ENCODING_GIF              MMAL_FOURCC('G', 'I', 'F', ' ')
++#define MMAL_ENCODING_PNG              MMAL_FOURCC('P', 'N', 'G', ' ')
++#define MMAL_ENCODING_PPM              MMAL_FOURCC('P', 'P', 'M', ' ')
++#define MMAL_ENCODING_TGA              MMAL_FOURCC('T', 'G', 'A', ' ')
++#define MMAL_ENCODING_BMP              MMAL_FOURCC('B', 'M', 'P', ' ')
++
++#define MMAL_ENCODING_I420             MMAL_FOURCC('I', '4', '2', '0')
++#define MMAL_ENCODING_I420_SLICE       MMAL_FOURCC('S', '4', '2', '0')
++#define MMAL_ENCODING_YV12             MMAL_FOURCC('Y', 'V', '1', '2')
++#define MMAL_ENCODING_I422             MMAL_FOURCC('I', '4', '2', '2')
++#define MMAL_ENCODING_I422_SLICE       MMAL_FOURCC('S', '4', '2', '2')
++#define MMAL_ENCODING_YUYV             MMAL_FOURCC('Y', 'U', 'Y', 'V')
++#define MMAL_ENCODING_YVYU             MMAL_FOURCC('Y', 'V', 'Y', 'U')
++#define MMAL_ENCODING_UYVY             MMAL_FOURCC('U', 'Y', 'V', 'Y')
++#define MMAL_ENCODING_VYUY             MMAL_FOURCC('V', 'Y', 'U', 'Y')
++#define MMAL_ENCODING_NV12             MMAL_FOURCC('N', 'V', '1', '2')
++#define MMAL_ENCODING_NV21             MMAL_FOURCC('N', 'V', '2', '1')
++#define MMAL_ENCODING_ARGB             MMAL_FOURCC('A', 'R', 'G', 'B')
++#define MMAL_ENCODING_RGBA             MMAL_FOURCC('R', 'G', 'B', 'A')
++#define MMAL_ENCODING_ABGR             MMAL_FOURCC('A', 'B', 'G', 'R')
++#define MMAL_ENCODING_BGRA             MMAL_FOURCC('B', 'G', 'R', 'A')
++#define MMAL_ENCODING_RGB16            MMAL_FOURCC('R', 'G', 'B', '2')
++#define MMAL_ENCODING_RGB24            MMAL_FOURCC('R', 'G', 'B', '3')
++#define MMAL_ENCODING_RGB32            MMAL_FOURCC('R', 'G', 'B', '4')
++#define MMAL_ENCODING_BGR16            MMAL_FOURCC('B', 'G', 'R', '2')
++#define MMAL_ENCODING_BGR24            MMAL_FOURCC('B', 'G', 'R', '3')
++#define MMAL_ENCODING_BGR32            MMAL_FOURCC('B', 'G', 'R', '4')
++
++/** SAND Video (YUVUV128) format, native format understood by VideoCore.
++ * This format is *not* opaque - if requested you will receive full frames
++ * of YUV_UV video.
++ */
++#define MMAL_ENCODING_YUVUV128         MMAL_FOURCC('S', 'A', 'N', 'D')
++
++/** VideoCore opaque image format, image handles are returned to
++ * the host but not the actual image data.
++ */
++#define MMAL_ENCODING_OPAQUE           MMAL_FOURCC('O', 'P', 'Q', 'V')
++
++/** An EGL image handle
++ */
++#define MMAL_ENCODING_EGL_IMAGE        MMAL_FOURCC('E', 'G', 'L', 'I')
++
++/* }@ */
++
++/** \name Pre-defined audio encodings */
++/* @{ */
++#define MMAL_ENCODING_PCM_UNSIGNED_BE  MMAL_FOURCC('P', 'C', 'M', 'U')
++#define MMAL_ENCODING_PCM_UNSIGNED_LE  MMAL_FOURCC('p', 'c', 'm', 'u')
++#define MMAL_ENCODING_PCM_SIGNED_BE    MMAL_FOURCC('P', 'C', 'M', 'S')
++#define MMAL_ENCODING_PCM_SIGNED_LE    MMAL_FOURCC('p', 'c', 'm', 's')
++#define MMAL_ENCODING_PCM_FLOAT_BE     MMAL_FOURCC('P', 'C', 'M', 'F')
++#define MMAL_ENCODING_PCM_FLOAT_LE     MMAL_FOURCC('p', 'c', 'm', 'f')
++
++/* Pre-defined H264 encoding variants */
++
++/** ISO 14496-10 Annex B byte stream format */
++#define MMAL_ENCODING_VARIANT_H264_DEFAULT   0
++/** ISO 14496-15 AVC stream format */
++#define MMAL_ENCODING_VARIANT_H264_AVC1      MMAL_FOURCC('A', 'V', 'C', '1')
++/** Implicitly delineated NAL units without emulation prevention */
++#define MMAL_ENCODING_VARIANT_H264_RAW       MMAL_FOURCC('R', 'A', 'W', ' ')
++
++/** \defgroup MmalColorSpace List of pre-defined video color spaces
++ * This defines a list of common color spaces. This list isn't exhaustive and
++ * is only provided as a convenience to avoid clients having to use FourCC
++ * codes directly. However components are allowed to define and use their own
++ * FourCC codes.
++ */
++/* @{ */
++
++/** Unknown color space */
++#define MMAL_COLOR_SPACE_UNKNOWN       0
++/** ITU-R BT.601-5 [SDTV] */
++#define MMAL_COLOR_SPACE_ITUR_BT601    MMAL_FOURCC('Y', '6', '0', '1')
++/** ITU-R BT.709-3 [HDTV] */
++#define MMAL_COLOR_SPACE_ITUR_BT709    MMAL_FOURCC('Y', '7', '0', '9')
++/** JPEG JFIF */
++#define MMAL_COLOR_SPACE_JPEG_JFIF     MMAL_FOURCC('Y', 'J', 'F', 'I')
++/** Title 47 Code of Federal Regulations (2003) 73.682 (a) (20) */
++#define MMAL_COLOR_SPACE_FCC           MMAL_FOURCC('Y', 'F', 'C', 'C')
++/** Society of Motion Picture and Television Engineers 240M (1999) */
++#define MMAL_COLOR_SPACE_SMPTE240M     MMAL_FOURCC('Y', '2', '4', '0')
++/** ITU-R BT.470-2 System M */
++#define MMAL_COLOR_SPACE_BT470_2_M     MMAL_FOURCC('Y', '_', '_', 'M')
++/** ITU-R BT.470-2 System BG */
++#define MMAL_COLOR_SPACE_BT470_2_BG    MMAL_FOURCC('Y', '_', 'B', 'G')
++/** JPEG JFIF, but with 16..255 luma */
++#define MMAL_COLOR_SPACE_JFIF_Y16_255  MMAL_FOURCC('Y', 'Y', '1', '6')
++/* @} MmalColorSpace List */
++
++#endif /* MMAL_ENCODINGS_H */
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-common.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-common.h
+new file mode 100644
+index 000000000000..9e92b30cd9bc
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-common.h
+@@ -0,0 +1,51 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ */
++
++#ifndef MMAL_MSG_COMMON_H
++#define MMAL_MSG_COMMON_H
++
++enum mmal_msg_status {
++	MMAL_MSG_STATUS_SUCCESS = 0, /**< Success */
++	MMAL_MSG_STATUS_ENOMEM,      /**< Out of memory */
++	MMAL_MSG_STATUS_ENOSPC,      /**< Out of resources other than memory */
++	MMAL_MSG_STATUS_EINVAL,      /**< Argument is invalid */
++	MMAL_MSG_STATUS_ENOSYS,      /**< Function not implemented */
++	MMAL_MSG_STATUS_ENOENT,      /**< No such file or directory */
++	MMAL_MSG_STATUS_ENXIO,       /**< No such device or address */
++	MMAL_MSG_STATUS_EIO,         /**< I/O error */
++	MMAL_MSG_STATUS_ESPIPE,      /**< Illegal seek */
++	MMAL_MSG_STATUS_ECORRUPT,    /**< Data is corrupt \attention */
++	MMAL_MSG_STATUS_ENOTREADY,   /**< Component is not ready */
++	MMAL_MSG_STATUS_ECONFIG,     /**< Component is not configured */
++	MMAL_MSG_STATUS_EISCONN,     /**< Port is already connected */
++	MMAL_MSG_STATUS_ENOTCONN,    /**< Port is disconnected */
++	MMAL_MSG_STATUS_EAGAIN,      /**< Resource temporarily unavailable. */
++	MMAL_MSG_STATUS_EFAULT,      /**< Bad address */
++};
++
++struct mmal_rect {
++	s32 x;      /**< x coordinate (from left) */
++	s32 y;      /**< y coordinate (from top) */
++	s32 width;  /**< width */
++	s32 height; /**< height */
++};
++
++struct mmal_rational {
++	s32 num;    /**< Numerator */
++	s32 den;    /**< Denominator */
++};
++
++#endif /* MMAL_MSG_COMMON_H */
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-format.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-format.h
+new file mode 100644
+index 000000000000..173510402f5c
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-format.h
+@@ -0,0 +1,109 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ */
++
++#ifndef MMAL_MSG_FORMAT_H
++#define MMAL_MSG_FORMAT_H
++
++#include "mmal-msg-common.h"
++
++/* MMAL_ES_FORMAT_T */
++
++struct mmal_audio_format {
++	u32 channels;		/* Number of audio channels */
++	u32 sample_rate;	/* Sample rate */
++
++	u32 bits_per_sample;	/* Bits per sample */
++	u32 block_align;	/* Size of a block of data */
++};
++
++struct mmal_video_format {
++	u32 width;		/* Width of frame in pixels */
++	u32 height;		/* Height of frame in rows of pixels */
++	struct mmal_rect crop;	/* Visible region of the frame */
++	struct mmal_rational frame_rate;	/* Frame rate */
++	struct mmal_rational par;		/* Pixel aspect ratio */
++
++	/*
++	 * FourCC specifying the color space of the video stream. See the
++	 * MmalColorSpace "pre-defined color spaces" for some examples.
++	 */
++	u32 color_space;
++};
++
++struct mmal_subpicture_format {
++	u32 x_offset;
++	u32 y_offset;
++};
++
++union mmal_es_specific_format {
++	struct mmal_audio_format audio;
++	struct mmal_video_format video;
++	struct mmal_subpicture_format subpicture;
++};
++
++/* Definition of an elementary stream format (MMAL_ES_FORMAT_T) */
++struct mmal_es_format_local {
++	u32 type;	/* enum mmal_es_type */
++
++	u32 encoding;	/* FourCC specifying encoding of the elementary
++			 * stream.
++			 */
++	u32 encoding_variant;	/* FourCC specifying the specific
++				 * encoding variant of the elementary
++				 * stream.
++				 */
++
++	union mmal_es_specific_format *es;	/* Type specific
++						 * information for the
++						 * elementary stream
++						 */
++
++	u32 bitrate;	/* Bitrate in bits per second */
++	u32 flags;	/* Flags describing properties of the elementary
++			 * stream.
++			 */
++
++	u32 extradata_size;	/* Size of the codec specific data */
++	u8  *extradata;		/* Codec specific data */
++};
++
++/* Remote definition of an elementary stream format (MMAL_ES_FORMAT_T) */
++struct mmal_es_format {
++	u32 type;	/* enum mmal_es_type */
++
++	u32 encoding;	/* FourCC specifying encoding of the elementary
++			 * stream.
++			 */
++	u32 encoding_variant;	/* FourCC specifying the specific
++				 * encoding variant of the elementary
++				 * stream.
++				 */
++
++	u32 es;	/* Type specific
++		 * information for the
++		 * elementary stream
++		 */
++
++	u32 bitrate;	/* Bitrate in bits per second */
++	u32 flags;	/* Flags describing properties of the elementary
++			 * stream.
++			 */
++
++	u32 extradata_size;	/* Size of the codec specific data */
++	u32 extradata;		/* Codec specific data */
++};
++
++#endif /* MMAL_MSG_FORMAT_H */
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-port.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-port.h
+new file mode 100644
+index 000000000000..c1d0d4bac23f
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg-port.h
+@@ -0,0 +1,112 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ */
++
++/* MMAL_PORT_TYPE_T */
++enum mmal_port_type {
++	MMAL_PORT_TYPE_UNKNOWN = 0,	/* Unknown port type */
++	MMAL_PORT_TYPE_CONTROL,		/* Control port */
++	MMAL_PORT_TYPE_INPUT,		/* Input port */
++	MMAL_PORT_TYPE_OUTPUT,		/* Output port */
++	MMAL_PORT_TYPE_CLOCK,		/* Clock port */
++};
++
++/* The port is pass-through and doesn't need buffer headers allocated */
++#define MMAL_PORT_CAPABILITY_PASSTHROUGH                       0x01
++/*
++ *The port wants to allocate the buffer payloads.
++ * This signals a preference that payload allocation should be done
++ * on this port for efficiency reasons.
++ */
++#define MMAL_PORT_CAPABILITY_ALLOCATION                        0x02
++/*
++ * The port supports format change events.
++ * This applies to input ports and is used to let the client know
++ * whether the port supports being reconfigured via a format
++ * change event (i.e. without having to disable the port).
++ */
++#define MMAL_PORT_CAPABILITY_SUPPORTS_EVENT_FORMAT_CHANGE      0x04
++
++/*
++ * mmal port structure (MMAL_PORT_T)
++ *
++ * most elements are informational only, the pointer values for
++ * interogation messages are generally provided as additional
++ * strucures within the message. When used to set values only the
++ * buffer_num, buffer_size and userdata parameters are writable.
++ */
++struct mmal_port {
++	u32 priv;	/* Private member used by the framework */
++	u32 name;	/* Port name. Used for debugging purposes (RO) */
++
++	u32 type;	/* Type of the port (RO) enum mmal_port_type */
++	u16 index;	/* Index of the port in its type list (RO) */
++	u16 index_all;	/* Index of the port in the list of all ports (RO) */
++
++	u32 is_enabled;	/* Indicates whether the port is enabled or not (RO) */
++	u32 format;	/* Format of the elementary stream */
++
++	u32 buffer_num_min;	/* Minimum number of buffers the port
++				 *   requires (RO).  This is set by the
++				 *   component.
++				 */
++
++	u32 buffer_size_min;	/* Minimum size of buffers the port
++				 * requires (RO).  This is set by the
++				 * component.
++				 */
++
++	u32 buffer_alignment_min;/* Minimum alignment requirement for
++				  * the buffers (RO).  A value of
++				  * zero means no special alignment
++				  * requirements.  This is set by the
++				  * component.
++				  */
++
++	u32 buffer_num_recommended;	/* Number of buffers the port
++					 * recommends for optimal
++					 * performance (RO).  A value of
++					 * zero means no special
++					 * recommendation.  This is set
++					 * by the component.
++					 */
++
++	u32 buffer_size_recommended;	/* Size of buffers the port
++					 * recommends for optimal
++					 * performance (RO).  A value of
++					 * zero means no special
++					 * recommendation.  This is set
++					 * by the component.
++					 */
++
++	u32 buffer_num;	/* Actual number of buffers the port will use.
++			 * This is set by the client.
++			 */
++
++	u32 buffer_size; /* Actual maximum size of the buffers that
++			  * will be sent to the port. This is set by
++			  * the client.
++			  */
++
++	u32 component;	/* Component this port belongs to (Read Only) */
++
++	u32 userdata;	/* Field reserved for use by the client */
++
++	u32 capabilities;	/* Flags describing the capabilities of a
++				 * port (RO).  Bitwise combination of \ref
++				 * portcapabilities "Port capabilities"
++				 * values.
++				 */
++};
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-msg.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg.h
+new file mode 100644
+index 000000000000..3fddf1dcaace
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-msg.h
+@@ -0,0 +1,410 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ */
++
++/*
++ * all the data structures which serialise the MMAL protocol. note
++ * these are directly mapped onto the recived message data.
++ *
++ * BEWARE: They seem to *assume* pointers are u32 and that there is no
++ * structure padding!
++ *
++ * NOTE: this implementation uses kernel types to ensure sizes. Rather
++ * than assigning values to enums to force their size the
++ * implementation uses fixed size types and not the enums (though the
++ * comments have the actual enum type
++ */
++#ifndef MMAL_MSG_H
++#define MMAL_MSG_H
++
++#define VC_MMAL_VER 15
++#define VC_MMAL_MIN_VER 10
++#define VC_MMAL_SERVER_NAME  MAKE_FOURCC("mmal")
++
++/* max total message size is 512 bytes */
++#define MMAL_MSG_MAX_SIZE 512
++/* with six 32bit header elements max payload is therefore 488 bytes */
++#define MMAL_MSG_MAX_PAYLOAD 488
++
++#include "mmal-msg-common.h"
++#include "mmal-msg-format.h"
++#include "mmal-msg-port.h"
++#include "mmal-vchiq.h"
++
++enum mmal_msg_type {
++	MMAL_MSG_TYPE_QUIT = 1,
++	MMAL_MSG_TYPE_SERVICE_CLOSED,
++	MMAL_MSG_TYPE_GET_VERSION,
++	MMAL_MSG_TYPE_COMPONENT_CREATE,
++	MMAL_MSG_TYPE_COMPONENT_DESTROY,	/* 5 */
++	MMAL_MSG_TYPE_COMPONENT_ENABLE,
++	MMAL_MSG_TYPE_COMPONENT_DISABLE,
++	MMAL_MSG_TYPE_PORT_INFO_GET,
++	MMAL_MSG_TYPE_PORT_INFO_SET,
++	MMAL_MSG_TYPE_PORT_ACTION,		/* 10 */
++	MMAL_MSG_TYPE_BUFFER_FROM_HOST,
++	MMAL_MSG_TYPE_BUFFER_TO_HOST,
++	MMAL_MSG_TYPE_GET_STATS,
++	MMAL_MSG_TYPE_PORT_PARAMETER_SET,
++	MMAL_MSG_TYPE_PORT_PARAMETER_GET,	/* 15 */
++	MMAL_MSG_TYPE_EVENT_TO_HOST,
++	MMAL_MSG_TYPE_GET_CORE_STATS_FOR_PORT,
++	MMAL_MSG_TYPE_OPAQUE_ALLOCATOR,
++	MMAL_MSG_TYPE_CONSUME_MEM,
++	MMAL_MSG_TYPE_LMK,			/* 20 */
++	MMAL_MSG_TYPE_OPAQUE_ALLOCATOR_DESC,
++	MMAL_MSG_TYPE_DRM_GET_LHS32,
++	MMAL_MSG_TYPE_DRM_GET_TIME,
++	MMAL_MSG_TYPE_BUFFER_FROM_HOST_ZEROLEN,
++	MMAL_MSG_TYPE_PORT_FLUSH,		/* 25 */
++	MMAL_MSG_TYPE_HOST_LOG,
++	MMAL_MSG_TYPE_MSG_LAST
++};
++
++/* port action request messages differ depending on the action type */
++enum mmal_msg_port_action_type {
++	MMAL_MSG_PORT_ACTION_TYPE_UNKNOWN = 0,	/* Unknown action */
++	MMAL_MSG_PORT_ACTION_TYPE_ENABLE,	/* Enable a port */
++	MMAL_MSG_PORT_ACTION_TYPE_DISABLE,	/* Disable a port */
++	MMAL_MSG_PORT_ACTION_TYPE_FLUSH,	/* Flush a port */
++	MMAL_MSG_PORT_ACTION_TYPE_CONNECT,	/* Connect ports */
++	MMAL_MSG_PORT_ACTION_TYPE_DISCONNECT,	/* Disconnect ports */
++	MMAL_MSG_PORT_ACTION_TYPE_SET_REQUIREMENTS, /* Set buffer requirements*/
++};
++
++struct mmal_msg_header {
++	u32 magic;
++	u32 type;	/* enum mmal_msg_type */
++
++	/* Opaque handle to the control service */
++	u32 control_service;
++
++	u32 context;	/* a u32 per message context */
++	u32 status;	/* The status of the vchiq operation */
++	u32 padding;
++};
++
++/* Send from VC to host to report version */
++struct mmal_msg_version {
++	u32 flags;
++	u32 major;
++	u32 minor;
++	u32 minimum;
++};
++
++/* request to VC to create component */
++struct mmal_msg_component_create {
++	u32 client_component;	/* component context */
++	char name[128];
++	u32 pid;		/* For debug */
++};
++
++/* reply from VC to component creation request */
++struct mmal_msg_component_create_reply {
++	u32 status;	/* enum mmal_msg_status - how does this differ to
++			 * the one in the header?
++			 */
++	u32 component_handle; /* VideoCore handle for component */
++	u32 input_num;        /* Number of input ports */
++	u32 output_num;       /* Number of output ports */
++	u32 clock_num;        /* Number of clock ports */
++};
++
++/* request to VC to destroy a component */
++struct mmal_msg_component_destroy {
++	u32 component_handle;
++};
++
++struct mmal_msg_component_destroy_reply {
++	u32 status; /* The component destruction status */
++};
++
++/* request and reply to VC to enable a component */
++struct mmal_msg_component_enable {
++	u32 component_handle;
++};
++
++struct mmal_msg_component_enable_reply {
++	u32 status; /* The component enable status */
++};
++
++/* request and reply to VC to disable a component */
++struct mmal_msg_component_disable {
++	u32 component_handle;
++};
++
++struct mmal_msg_component_disable_reply {
++	u32 status; /* The component disable status */
++};
++
++/* request to VC to get port information */
++struct mmal_msg_port_info_get {
++	u32 component_handle;  /* component handle port is associated with */
++	u32 port_type;         /* enum mmal_msg_port_type */
++	u32 index;             /* port index to query */
++};
++
++/* reply from VC to get port info request */
++struct mmal_msg_port_info_get_reply {
++	u32 status;		/* enum mmal_msg_status */
++	u32 component_handle;	/* component handle port is associated with */
++	u32 port_type;		/* enum mmal_msg_port_type */
++	u32 port_index;		/* port indexed in query */
++	s32 found;		/* unused */
++	u32 port_handle;	/* Handle to use for this port */
++	struct mmal_port port;
++	struct mmal_es_format format; /* elementary stream format */
++	union mmal_es_specific_format es; /* es type specific data */
++	u8 extradata[MMAL_FORMAT_EXTRADATA_MAX_SIZE]; /* es extra data */
++};
++
++/* request to VC to set port information */
++struct mmal_msg_port_info_set {
++	u32 component_handle;
++	u32 port_type;		/* enum mmal_msg_port_type */
++	u32 port_index;		/* port indexed in query */
++	struct mmal_port port;
++	struct mmal_es_format format;
++	union mmal_es_specific_format es;
++	u8 extradata[MMAL_FORMAT_EXTRADATA_MAX_SIZE];
++};
++
++/* reply from VC to port info set request */
++struct mmal_msg_port_info_set_reply {
++	u32 status;
++	u32 component_handle;	/* component handle port is associated with */
++	u32 port_type;		/* enum mmal_msg_port_type */
++	u32 index;		/* port indexed in query */
++	s32 found;		/* unused */
++	u32 port_handle;	/* Handle to use for this port */
++	struct mmal_port port;
++	struct mmal_es_format format;
++	union mmal_es_specific_format es;
++	u8 extradata[MMAL_FORMAT_EXTRADATA_MAX_SIZE];
++};
++
++/* port action requests that take a mmal_port as a parameter */
++struct mmal_msg_port_action_port {
++	u32 component_handle;
++	u32 port_handle;
++	u32 action;		/* enum mmal_msg_port_action_type */
++	struct mmal_port port;
++};
++
++/* port action requests that take handles as a parameter */
++struct mmal_msg_port_action_handle {
++	u32 component_handle;
++	u32 port_handle;
++	u32 action;		/* enum mmal_msg_port_action_type */
++	u32 connect_component_handle;
++	u32 connect_port_handle;
++};
++
++struct mmal_msg_port_action_reply {
++	u32 status;	/* The port action operation status */
++};
++
++/* MMAL buffer transfer */
++
++/* Size of space reserved in a buffer message for short messages. */
++#define MMAL_VC_SHORT_DATA 128
++
++/* Signals that the current payload is the end of the stream of data */
++#define MMAL_BUFFER_HEADER_FLAG_EOS                    BIT(0)
++/* Signals that the start of the current payload starts a frame */
++#define MMAL_BUFFER_HEADER_FLAG_FRAME_START            BIT(1)
++/* Signals that the end of the current payload ends a frame */
++#define MMAL_BUFFER_HEADER_FLAG_FRAME_END              BIT(2)
++/* Signals that the current payload contains only complete frames (>1) */
++#define MMAL_BUFFER_HEADER_FLAG_FRAME                  \
++	(MMAL_BUFFER_HEADER_FLAG_FRAME_START | \
++	 MMAL_BUFFER_HEADER_FLAG_FRAME_END)
++/* Signals that the current payload is a keyframe (i.e. self decodable) */
++#define MMAL_BUFFER_HEADER_FLAG_KEYFRAME               BIT(3)
++/*
++ * Signals a discontinuity in the stream of data (e.g. after a seek).
++ * Can be used for instance by a decoder to reset its state
++ */
++#define MMAL_BUFFER_HEADER_FLAG_DISCONTINUITY          BIT(4)
++/*
++ * Signals a buffer containing some kind of config data for the component
++ * (e.g. codec config data)
++ */
++#define MMAL_BUFFER_HEADER_FLAG_CONFIG                 BIT(5)
++/* Signals an encrypted payload */
++#define MMAL_BUFFER_HEADER_FLAG_ENCRYPTED              BIT(6)
++/* Signals a buffer containing side information */
++#define MMAL_BUFFER_HEADER_FLAG_CODECSIDEINFO          BIT(7)
++/*
++ * Signals a buffer which is the snapshot/postview image from a stills
++ * capture
++ */
++#define MMAL_BUFFER_HEADER_FLAGS_SNAPSHOT              BIT(8)
++/* Signals a buffer which contains data known to be corrupted */
++#define MMAL_BUFFER_HEADER_FLAG_CORRUPTED              BIT(9)
++/* Signals that a buffer failed to be transmitted */
++#define MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED    BIT(10)
++
++struct mmal_driver_buffer {
++	u32 magic;
++	u32 component_handle;
++	u32 port_handle;
++	u32 client_context;
++};
++
++/* buffer header */
++struct mmal_buffer_header {
++	u32 next;	/* next header */
++	u32 priv;	/* framework private data */
++	u32 cmd;
++	u32 data;
++	u32 alloc_size;
++	u32 length;
++	u32 offset;
++	u32 flags;
++	s64 pts;
++	s64 dts;
++	u32 type;
++	u32 user_data;
++};
++
++struct mmal_buffer_header_type_specific {
++	union {
++		struct {
++		u32 planes;
++		u32 offset[4];
++		u32 pitch[4];
++		u32 flags;
++		} video;
++	} u;
++};
++
++struct mmal_msg_buffer_from_host {
++	/*
++	 *The front 32 bytes of the buffer header are copied
++	 * back to us in the reply to allow for context. This
++	 * area is used to store two mmal_driver_buffer structures to
++	 * allow for multiple concurrent service users.
++	 */
++	/* control data */
++	struct mmal_driver_buffer drvbuf;
++
++	/* referenced control data for passthrough buffer management */
++	struct mmal_driver_buffer drvbuf_ref;
++	struct mmal_buffer_header buffer_header; /* buffer header itself */
++	struct mmal_buffer_header_type_specific buffer_header_type_specific;
++	s32 is_zero_copy;
++	s32 has_reference;
++
++	/* allows short data to be xfered in control message */
++	u32 payload_in_message;
++	u8 short_data[MMAL_VC_SHORT_DATA];
++};
++
++/* port parameter setting */
++
++#define MMAL_WORKER_PORT_PARAMETER_SPACE      96
++
++struct mmal_msg_port_parameter_set {
++	u32 component_handle;	/* component */
++	u32 port_handle;	/* port */
++	u32 id;			/* Parameter ID  */
++	u32 size;		/* Parameter size */
++	uint32_t value[MMAL_WORKER_PORT_PARAMETER_SPACE];
++};
++
++struct mmal_msg_port_parameter_set_reply {
++	u32 status;	/* enum mmal_msg_status todo: how does this
++			 * differ to the one in the header?
++			 */
++};
++
++/* port parameter getting */
++
++struct mmal_msg_port_parameter_get {
++	u32 component_handle;	/* component */
++	u32 port_handle;	/* port */
++	u32 id;			/* Parameter ID  */
++	u32 size;		/* Parameter size */
++};
++
++struct mmal_msg_port_parameter_get_reply {
++	u32 status;		/* Status of mmal_port_parameter_get call */
++	u32 id;			/* Parameter ID  */
++	u32 size;		/* Parameter size */
++	uint32_t value[MMAL_WORKER_PORT_PARAMETER_SPACE];
++};
++
++/* event messages */
++#define MMAL_WORKER_EVENT_SPACE 256
++
++struct mmal_msg_event_to_host {
++	u32 client_component;	/* component context */
++
++	u32 port_type;
++	u32 port_num;
++
++	u32 cmd;
++	u32 length;
++	u8 data[MMAL_WORKER_EVENT_SPACE];
++	u32 delayed_buffer;
++};
++
++/* all mmal messages are serialised through this structure */
++struct mmal_msg {
++	/* header */
++	struct mmal_msg_header h;
++	/* payload */
++	union {
++		struct mmal_msg_version version;
++
++		struct mmal_msg_component_create component_create;
++		struct mmal_msg_component_create_reply component_create_reply;
++
++		struct mmal_msg_component_destroy component_destroy;
++		struct mmal_msg_component_destroy_reply component_destroy_reply;
++
++		struct mmal_msg_component_enable component_enable;
++		struct mmal_msg_component_enable_reply component_enable_reply;
++
++		struct mmal_msg_component_disable component_disable;
++		struct mmal_msg_component_disable_reply component_disable_reply;
++
++		struct mmal_msg_port_info_get port_info_get;
++		struct mmal_msg_port_info_get_reply port_info_get_reply;
++
++		struct mmal_msg_port_info_set port_info_set;
++		struct mmal_msg_port_info_set_reply port_info_set_reply;
++
++		struct mmal_msg_port_action_port port_action_port;
++		struct mmal_msg_port_action_handle port_action_handle;
++		struct mmal_msg_port_action_reply port_action_reply;
++
++		struct mmal_msg_buffer_from_host buffer_from_host;
++
++		struct mmal_msg_port_parameter_set port_parameter_set;
++		struct mmal_msg_port_parameter_set_reply
++			port_parameter_set_reply;
++		struct mmal_msg_port_parameter_get
++			port_parameter_get;
++		struct mmal_msg_port_parameter_get_reply
++			port_parameter_get_reply;
++
++		struct mmal_msg_event_to_host event_to_host;
++
++		u8 payload[MMAL_MSG_MAX_PAYLOAD];
++	} u;
++};
++#endif
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-parameters.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-parameters.h
+new file mode 100644
+index 000000000000..f69e9f10d5b1
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-parameters.h
+@@ -0,0 +1,701 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ */
++
++/* common parameters */
++
++/** @name Parameter groups
++ * Parameters are divided into groups, and then allocated sequentially within
++ * a group using an enum.
++ * @{
++ */
++
++#ifndef __MMAL_PARAMETERS_H
++#define __MMAL_PARAMETERS_H
++
++/** Common parameter ID group, used with many types of component. */
++#define MMAL_PARAMETER_GROUP_COMMON            (0 << 16)
++/** Camera-specific parameter ID group. */
++#define MMAL_PARAMETER_GROUP_CAMERA            (1 << 16)
++/** Video-specific parameter ID group. */
++#define MMAL_PARAMETER_GROUP_VIDEO             (2 << 16)
++/** Audio-specific parameter ID group. */
++#define MMAL_PARAMETER_GROUP_AUDIO             (3 << 16)
++/** Clock-specific parameter ID group. */
++#define MMAL_PARAMETER_GROUP_CLOCK             (4 << 16)
++/** Miracast-specific parameter ID group. */
++#define MMAL_PARAMETER_GROUP_MIRACAST       (5 << 16)
++
++/* Common parameters */
++enum mmal_parameter_common_type {
++	MMAL_PARAMETER_UNUSED  /**< Never a valid parameter ID */
++		= MMAL_PARAMETER_GROUP_COMMON,
++	MMAL_PARAMETER_SUPPORTED_ENCODINGS, /**< MMAL_PARAMETER_ENCODING_T */
++	MMAL_PARAMETER_URI, /**< MMAL_PARAMETER_URI_T */
++
++	/** MMAL_PARAMETER_CHANGE_EVENT_REQUEST_T */
++	MMAL_PARAMETER_CHANGE_EVENT_REQUEST,
++
++	/** MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_ZERO_COPY,
++
++	/**< MMAL_PARAMETER_BUFFER_REQUIREMENTS_T */
++	MMAL_PARAMETER_BUFFER_REQUIREMENTS,
++
++	MMAL_PARAMETER_STATISTICS, /**< MMAL_PARAMETER_STATISTICS_T */
++	MMAL_PARAMETER_CORE_STATISTICS, /**< MMAL_PARAMETER_CORE_STATISTICS_T */
++	MMAL_PARAMETER_MEM_USAGE, /**< MMAL_PARAMETER_MEM_USAGE_T */
++	MMAL_PARAMETER_BUFFER_FLAG_FILTER, /**< MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_SEEK, /**< MMAL_PARAMETER_SEEK_T */
++	MMAL_PARAMETER_POWERMON_ENABLE, /**< MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_LOGGING, /**< MMAL_PARAMETER_LOGGING_T */
++	MMAL_PARAMETER_SYSTEM_TIME, /**< MMAL_PARAMETER_UINT64_T */
++	MMAL_PARAMETER_NO_IMAGE_PADDING  /**< MMAL_PARAMETER_BOOLEAN_T */
++};
++
++/* camera parameters */
++
++enum mmal_parameter_camera_type {
++	/* 0 */
++	/** @ref MMAL_PARAMETER_THUMBNAIL_CONFIG_T */
++	MMAL_PARAMETER_THUMBNAIL_CONFIGURATION
++		= MMAL_PARAMETER_GROUP_CAMERA,
++	MMAL_PARAMETER_CAPTURE_QUALITY, /**< Unused? */
++	MMAL_PARAMETER_ROTATION, /**< @ref MMAL_PARAMETER_INT32_T */
++	MMAL_PARAMETER_EXIF_DISABLE, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_EXIF, /**< @ref MMAL_PARAMETER_EXIF_T */
++	MMAL_PARAMETER_AWB_MODE, /**< @ref MMAL_PARAM_AWBMODE_T */
++	MMAL_PARAMETER_IMAGE_EFFECT, /**< @ref MMAL_PARAMETER_IMAGEFX_T */
++	MMAL_PARAMETER_COLOUR_EFFECT, /**< @ref MMAL_PARAMETER_COLOURFX_T */
++	MMAL_PARAMETER_FLICKER_AVOID, /**< @ref MMAL_PARAMETER_FLICKERAVOID_T */
++	MMAL_PARAMETER_FLASH, /**< @ref MMAL_PARAMETER_FLASH_T */
++	MMAL_PARAMETER_REDEYE, /**< @ref MMAL_PARAMETER_REDEYE_T */
++	MMAL_PARAMETER_FOCUS, /**< @ref MMAL_PARAMETER_FOCUS_T */
++	MMAL_PARAMETER_FOCAL_LENGTHS, /**< Unused? */
++	MMAL_PARAMETER_EXPOSURE_COMP, /**< @ref MMAL_PARAMETER_INT32_T */
++	MMAL_PARAMETER_ZOOM, /**< @ref MMAL_PARAMETER_SCALEFACTOR_T */
++	MMAL_PARAMETER_MIRROR, /**< @ref MMAL_PARAMETER_MIRROR_T */
++
++	/* 0x10 */
++	MMAL_PARAMETER_CAMERA_NUM, /**< @ref MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_CAPTURE, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_EXPOSURE_MODE, /**< @ref MMAL_PARAMETER_EXPOSUREMODE_T */
++	MMAL_PARAMETER_EXP_METERING_MODE, /**< @ref MMAL_PARAMETER_EXPOSUREMETERINGMODE_T */
++	MMAL_PARAMETER_FOCUS_STATUS, /**< @ref MMAL_PARAMETER_FOCUS_STATUS_T */
++	MMAL_PARAMETER_CAMERA_CONFIG, /**< @ref MMAL_PARAMETER_CAMERA_CONFIG_T */
++	MMAL_PARAMETER_CAPTURE_STATUS, /**< @ref MMAL_PARAMETER_CAPTURE_STATUS_T */
++	MMAL_PARAMETER_FACE_TRACK, /**< @ref MMAL_PARAMETER_FACE_TRACK_T */
++	MMAL_PARAMETER_DRAW_BOX_FACES_AND_FOCUS, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_JPEG_Q_FACTOR, /**< @ref MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_FRAME_RATE, /**< @ref MMAL_PARAMETER_FRAME_RATE_T */
++	MMAL_PARAMETER_USE_STC, /**< @ref MMAL_PARAMETER_CAMERA_STC_MODE_T */
++	MMAL_PARAMETER_CAMERA_INFO, /**< @ref MMAL_PARAMETER_CAMERA_INFO_T */
++	MMAL_PARAMETER_VIDEO_STABILISATION, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_FACE_TRACK_RESULTS, /**< @ref MMAL_PARAMETER_FACE_TRACK_RESULTS_T */
++	MMAL_PARAMETER_ENABLE_RAW_CAPTURE, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++
++	/* 0x20 */
++	MMAL_PARAMETER_DPF_FILE, /**< @ref MMAL_PARAMETER_URI_T */
++	MMAL_PARAMETER_ENABLE_DPF_FILE, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_DPF_FAIL_IS_FATAL, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_CAPTURE_MODE, /**< @ref MMAL_PARAMETER_CAPTUREMODE_T */
++	MMAL_PARAMETER_FOCUS_REGIONS, /**< @ref MMAL_PARAMETER_FOCUS_REGIONS_T */
++	MMAL_PARAMETER_INPUT_CROP, /**< @ref MMAL_PARAMETER_INPUT_CROP_T */
++	MMAL_PARAMETER_SENSOR_INFORMATION, /**< @ref MMAL_PARAMETER_SENSOR_INFORMATION_T */
++	MMAL_PARAMETER_FLASH_SELECT, /**< @ref MMAL_PARAMETER_FLASH_SELECT_T */
++	MMAL_PARAMETER_FIELD_OF_VIEW, /**< @ref MMAL_PARAMETER_FIELD_OF_VIEW_T */
++	MMAL_PARAMETER_HIGH_DYNAMIC_RANGE, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_DYNAMIC_RANGE_COMPRESSION, /**< @ref MMAL_PARAMETER_DRC_T */
++	MMAL_PARAMETER_ALGORITHM_CONTROL, /**< @ref MMAL_PARAMETER_ALGORITHM_CONTROL_T */
++	MMAL_PARAMETER_SHARPNESS, /**< @ref MMAL_PARAMETER_RATIONAL_T */
++	MMAL_PARAMETER_CONTRAST, /**< @ref MMAL_PARAMETER_RATIONAL_T */
++	MMAL_PARAMETER_BRIGHTNESS, /**< @ref MMAL_PARAMETER_RATIONAL_T */
++	MMAL_PARAMETER_SATURATION, /**< @ref MMAL_PARAMETER_RATIONAL_T */
++
++	/* 0x30 */
++	MMAL_PARAMETER_ISO, /**< @ref MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_ANTISHAKE, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++
++	/** @ref MMAL_PARAMETER_IMAGEFX_PARAMETERS_T */
++	MMAL_PARAMETER_IMAGE_EFFECT_PARAMETERS,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_CAMERA_BURST_CAPTURE,
++
++	/** @ref MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_CAMERA_MIN_ISO,
++
++	/** @ref MMAL_PARAMETER_CAMERA_USE_CASE_T */
++	MMAL_PARAMETER_CAMERA_USE_CASE,
++
++	/**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_CAPTURE_STATS_PASS,
++
++	/** @ref MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_CAMERA_CUSTOM_SENSOR_CONFIG,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_ENABLE_REGISTER_FILE,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_REGISTER_FAIL_IS_FATAL,
++
++	/** @ref MMAL_PARAMETER_CONFIGFILE_T */
++	MMAL_PARAMETER_CONFIGFILE_REGISTERS,
++
++	/** @ref MMAL_PARAMETER_CONFIGFILE_CHUNK_T */
++	MMAL_PARAMETER_CONFIGFILE_CHUNK_REGISTERS,
++	MMAL_PARAMETER_JPEG_ATTACH_LOG, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_ZERO_SHUTTER_LAG, /**< @ref MMAL_PARAMETER_ZEROSHUTTERLAG_T */
++	MMAL_PARAMETER_FPS_RANGE, /**< @ref MMAL_PARAMETER_FPS_RANGE_T */
++	MMAL_PARAMETER_CAPTURE_EXPOSURE_COMP, /**< @ref MMAL_PARAMETER_INT32_T */
++
++	/* 0x40 */
++	MMAL_PARAMETER_SW_SHARPEN_DISABLE, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_FLASH_REQUIRED, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_SW_SATURATION_DISABLE, /**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_SHUTTER_SPEED,             /**< Takes a @ref MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_CUSTOM_AWB_GAINS,          /**< Takes a @ref MMAL_PARAMETER_AWB_GAINS_T */
++};
++
++struct mmal_parameter_rational {
++	s32 num;    /**< Numerator */
++	s32 den;    /**< Denominator */
++};
++
++enum mmal_parameter_camera_config_timestamp_mode {
++	MMAL_PARAM_TIMESTAMP_MODE_ZERO = 0, /* Always timestamp frames as 0 */
++	MMAL_PARAM_TIMESTAMP_MODE_RAW_STC,  /* Use the raw STC value
++					     * for the frame timestamp
++					     */
++	MMAL_PARAM_TIMESTAMP_MODE_RESET_STC, /* Use the STC timestamp
++					      * but subtract the
++					      * timestamp of the first
++					      * frame sent to give a
++					      * zero based timestamp.
++					      */
++};
++
++struct mmal_parameter_fps_range {
++	/**< Low end of the permitted framerate range */
++	struct mmal_parameter_rational	fps_low;
++	/**< High end of the permitted framerate range */
++	struct mmal_parameter_rational	fps_high;
++};
++
++/* camera configuration parameter */
++struct mmal_parameter_camera_config {
++	/* Parameters for setting up the image pools */
++	u32 max_stills_w; /* Max size of stills capture */
++	u32 max_stills_h;
++	u32 stills_yuv422; /* Allow YUV422 stills capture */
++	u32 one_shot_stills; /* Continuous or one shot stills captures. */
++
++	u32 max_preview_video_w; /* Max size of the preview or video
++				  * capture frames
++				  */
++	u32 max_preview_video_h;
++	u32 num_preview_video_frames;
++
++	/** Sets the height of the circular buffer for stills capture. */
++	u32 stills_capture_circular_buffer_height;
++
++	/** Allows preview/encode to resume as fast as possible after the stills
++	 * input frame has been received, and then processes the still frame in
++	 * the background whilst preview/encode has resumed.
++	 * Actual mode is controlled by MMAL_PARAMETER_CAPTURE_MODE.
++	 */
++	u32 fast_preview_resume;
++
++	/** Selects algorithm for timestamping frames if
++	 * there is no clock component connected.
++	 * enum mmal_parameter_camera_config_timestamp_mode
++	 */
++	s32 use_stc_timestamp;
++};
++
++enum mmal_parameter_exposuremode {
++	MMAL_PARAM_EXPOSUREMODE_OFF,
++	MMAL_PARAM_EXPOSUREMODE_AUTO,
++	MMAL_PARAM_EXPOSUREMODE_NIGHT,
++	MMAL_PARAM_EXPOSUREMODE_NIGHTPREVIEW,
++	MMAL_PARAM_EXPOSUREMODE_BACKLIGHT,
++	MMAL_PARAM_EXPOSUREMODE_SPOTLIGHT,
++	MMAL_PARAM_EXPOSUREMODE_SPORTS,
++	MMAL_PARAM_EXPOSUREMODE_SNOW,
++	MMAL_PARAM_EXPOSUREMODE_BEACH,
++	MMAL_PARAM_EXPOSUREMODE_VERYLONG,
++	MMAL_PARAM_EXPOSUREMODE_FIXEDFPS,
++	MMAL_PARAM_EXPOSUREMODE_ANTISHAKE,
++	MMAL_PARAM_EXPOSUREMODE_FIREWORKS,
++};
++
++enum mmal_parameter_exposuremeteringmode {
++	MMAL_PARAM_EXPOSUREMETERINGMODE_AVERAGE,
++	MMAL_PARAM_EXPOSUREMETERINGMODE_SPOT,
++	MMAL_PARAM_EXPOSUREMETERINGMODE_BACKLIT,
++	MMAL_PARAM_EXPOSUREMETERINGMODE_MATRIX,
++};
++
++enum mmal_parameter_awbmode {
++	MMAL_PARAM_AWBMODE_OFF,
++	MMAL_PARAM_AWBMODE_AUTO,
++	MMAL_PARAM_AWBMODE_SUNLIGHT,
++	MMAL_PARAM_AWBMODE_CLOUDY,
++	MMAL_PARAM_AWBMODE_SHADE,
++	MMAL_PARAM_AWBMODE_TUNGSTEN,
++	MMAL_PARAM_AWBMODE_FLUORESCENT,
++	MMAL_PARAM_AWBMODE_INCANDESCENT,
++	MMAL_PARAM_AWBMODE_FLASH,
++	MMAL_PARAM_AWBMODE_HORIZON,
++};
++
++enum mmal_parameter_imagefx {
++	MMAL_PARAM_IMAGEFX_NONE,
++	MMAL_PARAM_IMAGEFX_NEGATIVE,
++	MMAL_PARAM_IMAGEFX_SOLARIZE,
++	MMAL_PARAM_IMAGEFX_POSTERIZE,
++	MMAL_PARAM_IMAGEFX_WHITEBOARD,
++	MMAL_PARAM_IMAGEFX_BLACKBOARD,
++	MMAL_PARAM_IMAGEFX_SKETCH,
++	MMAL_PARAM_IMAGEFX_DENOISE,
++	MMAL_PARAM_IMAGEFX_EMBOSS,
++	MMAL_PARAM_IMAGEFX_OILPAINT,
++	MMAL_PARAM_IMAGEFX_HATCH,
++	MMAL_PARAM_IMAGEFX_GPEN,
++	MMAL_PARAM_IMAGEFX_PASTEL,
++	MMAL_PARAM_IMAGEFX_WATERCOLOUR,
++	MMAL_PARAM_IMAGEFX_FILM,
++	MMAL_PARAM_IMAGEFX_BLUR,
++	MMAL_PARAM_IMAGEFX_SATURATION,
++	MMAL_PARAM_IMAGEFX_COLOURSWAP,
++	MMAL_PARAM_IMAGEFX_WASHEDOUT,
++	MMAL_PARAM_IMAGEFX_POSTERISE,
++	MMAL_PARAM_IMAGEFX_COLOURPOINT,
++	MMAL_PARAM_IMAGEFX_COLOURBALANCE,
++	MMAL_PARAM_IMAGEFX_CARTOON,
++};
++
++enum MMAL_PARAM_FLICKERAVOID_T {
++	MMAL_PARAM_FLICKERAVOID_OFF,
++	MMAL_PARAM_FLICKERAVOID_AUTO,
++	MMAL_PARAM_FLICKERAVOID_50HZ,
++	MMAL_PARAM_FLICKERAVOID_60HZ,
++	MMAL_PARAM_FLICKERAVOID_MAX = 0x7FFFFFFF
++};
++
++struct mmal_parameter_awbgains {
++	struct mmal_parameter_rational r_gain;	/**< Red gain */
++	struct mmal_parameter_rational b_gain;	/**< Blue gain */
++};
++
++/** Manner of video rate control */
++enum mmal_parameter_rate_control_mode {
++	MMAL_VIDEO_RATECONTROL_DEFAULT,
++	MMAL_VIDEO_RATECONTROL_VARIABLE,
++	MMAL_VIDEO_RATECONTROL_CONSTANT,
++	MMAL_VIDEO_RATECONTROL_VARIABLE_SKIP_FRAMES,
++	MMAL_VIDEO_RATECONTROL_CONSTANT_SKIP_FRAMES
++};
++
++enum mmal_video_profile {
++	MMAL_VIDEO_PROFILE_H263_BASELINE,
++	MMAL_VIDEO_PROFILE_H263_H320CODING,
++	MMAL_VIDEO_PROFILE_H263_BACKWARDCOMPATIBLE,
++	MMAL_VIDEO_PROFILE_H263_ISWV2,
++	MMAL_VIDEO_PROFILE_H263_ISWV3,
++	MMAL_VIDEO_PROFILE_H263_HIGHCOMPRESSION,
++	MMAL_VIDEO_PROFILE_H263_INTERNET,
++	MMAL_VIDEO_PROFILE_H263_INTERLACE,
++	MMAL_VIDEO_PROFILE_H263_HIGHLATENCY,
++	MMAL_VIDEO_PROFILE_MP4V_SIMPLE,
++	MMAL_VIDEO_PROFILE_MP4V_SIMPLESCALABLE,
++	MMAL_VIDEO_PROFILE_MP4V_CORE,
++	MMAL_VIDEO_PROFILE_MP4V_MAIN,
++	MMAL_VIDEO_PROFILE_MP4V_NBIT,
++	MMAL_VIDEO_PROFILE_MP4V_SCALABLETEXTURE,
++	MMAL_VIDEO_PROFILE_MP4V_SIMPLEFACE,
++	MMAL_VIDEO_PROFILE_MP4V_SIMPLEFBA,
++	MMAL_VIDEO_PROFILE_MP4V_BASICANIMATED,
++	MMAL_VIDEO_PROFILE_MP4V_HYBRID,
++	MMAL_VIDEO_PROFILE_MP4V_ADVANCEDREALTIME,
++	MMAL_VIDEO_PROFILE_MP4V_CORESCALABLE,
++	MMAL_VIDEO_PROFILE_MP4V_ADVANCEDCODING,
++	MMAL_VIDEO_PROFILE_MP4V_ADVANCEDCORE,
++	MMAL_VIDEO_PROFILE_MP4V_ADVANCEDSCALABLE,
++	MMAL_VIDEO_PROFILE_MP4V_ADVANCEDSIMPLE,
++	MMAL_VIDEO_PROFILE_H264_BASELINE,
++	MMAL_VIDEO_PROFILE_H264_MAIN,
++	MMAL_VIDEO_PROFILE_H264_EXTENDED,
++	MMAL_VIDEO_PROFILE_H264_HIGH,
++	MMAL_VIDEO_PROFILE_H264_HIGH10,
++	MMAL_VIDEO_PROFILE_H264_HIGH422,
++	MMAL_VIDEO_PROFILE_H264_HIGH444,
++	MMAL_VIDEO_PROFILE_H264_CONSTRAINED_BASELINE,
++	MMAL_VIDEO_PROFILE_DUMMY = 0x7FFFFFFF
++};
++
++enum mmal_video_level {
++	MMAL_VIDEO_LEVEL_H263_10,
++	MMAL_VIDEO_LEVEL_H263_20,
++	MMAL_VIDEO_LEVEL_H263_30,
++	MMAL_VIDEO_LEVEL_H263_40,
++	MMAL_VIDEO_LEVEL_H263_45,
++	MMAL_VIDEO_LEVEL_H263_50,
++	MMAL_VIDEO_LEVEL_H263_60,
++	MMAL_VIDEO_LEVEL_H263_70,
++	MMAL_VIDEO_LEVEL_MP4V_0,
++	MMAL_VIDEO_LEVEL_MP4V_0b,
++	MMAL_VIDEO_LEVEL_MP4V_1,
++	MMAL_VIDEO_LEVEL_MP4V_2,
++	MMAL_VIDEO_LEVEL_MP4V_3,
++	MMAL_VIDEO_LEVEL_MP4V_4,
++	MMAL_VIDEO_LEVEL_MP4V_4a,
++	MMAL_VIDEO_LEVEL_MP4V_5,
++	MMAL_VIDEO_LEVEL_MP4V_6,
++	MMAL_VIDEO_LEVEL_H264_1,
++	MMAL_VIDEO_LEVEL_H264_1b,
++	MMAL_VIDEO_LEVEL_H264_11,
++	MMAL_VIDEO_LEVEL_H264_12,
++	MMAL_VIDEO_LEVEL_H264_13,
++	MMAL_VIDEO_LEVEL_H264_2,
++	MMAL_VIDEO_LEVEL_H264_21,
++	MMAL_VIDEO_LEVEL_H264_22,
++	MMAL_VIDEO_LEVEL_H264_3,
++	MMAL_VIDEO_LEVEL_H264_31,
++	MMAL_VIDEO_LEVEL_H264_32,
++	MMAL_VIDEO_LEVEL_H264_4,
++	MMAL_VIDEO_LEVEL_H264_41,
++	MMAL_VIDEO_LEVEL_H264_42,
++	MMAL_VIDEO_LEVEL_H264_5,
++	MMAL_VIDEO_LEVEL_H264_51,
++	MMAL_VIDEO_LEVEL_DUMMY = 0x7FFFFFFF
++};
++
++struct mmal_parameter_video_profile {
++	enum mmal_video_profile profile;
++	enum mmal_video_level level;
++};
++
++/* video parameters */
++
++enum mmal_parameter_video_type {
++	/** @ref MMAL_DISPLAYREGION_T */
++	MMAL_PARAMETER_DISPLAYREGION = MMAL_PARAMETER_GROUP_VIDEO,
++
++	/** @ref MMAL_PARAMETER_VIDEO_PROFILE_T */
++	MMAL_PARAMETER_SUPPORTED_PROFILES,
++
++	/** @ref MMAL_PARAMETER_VIDEO_PROFILE_T */
++	MMAL_PARAMETER_PROFILE,
++
++	/** @ref MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_INTRAPERIOD,
++
++	/** @ref MMAL_PARAMETER_VIDEO_RATECONTROL_T */
++	MMAL_PARAMETER_RATECONTROL,
++
++	/** @ref MMAL_PARAMETER_VIDEO_NALUNITFORMAT_T */
++	MMAL_PARAMETER_NALUNITFORMAT,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_MINIMISE_FRAGMENTATION,
++
++	/** @ref MMAL_PARAMETER_UINT32_T.
++	 * Setting the value to zero resets to the default (one slice per frame).
++	 */
++	MMAL_PARAMETER_MB_ROWS_PER_SLICE,
++
++	/** @ref MMAL_PARAMETER_VIDEO_LEVEL_EXTENSION_T */
++	MMAL_PARAMETER_VIDEO_LEVEL_EXTENSION,
++
++	/** @ref MMAL_PARAMETER_VIDEO_EEDE_ENABLE_T */
++	MMAL_PARAMETER_VIDEO_EEDE_ENABLE,
++
++	/** @ref MMAL_PARAMETER_VIDEO_EEDE_LOSSRATE_T */
++	MMAL_PARAMETER_VIDEO_EEDE_LOSSRATE,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T. Request an I-frame. */
++	MMAL_PARAMETER_VIDEO_REQUEST_I_FRAME,
++	/** @ref MMAL_PARAMETER_VIDEO_INTRA_REFRESH_T */
++	MMAL_PARAMETER_VIDEO_INTRA_REFRESH,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T. */
++	MMAL_PARAMETER_VIDEO_IMMUTABLE_INPUT,
++
++	/** @ref MMAL_PARAMETER_UINT32_T. Run-time bit rate control */
++	MMAL_PARAMETER_VIDEO_BIT_RATE,
++
++	/** @ref MMAL_PARAMETER_FRAME_RATE_T */
++	MMAL_PARAMETER_VIDEO_FRAME_RATE,
++
++	/** @ref MMAL_PARAMETER_UINT32_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_MIN_QUANT,
++
++	/** @ref MMAL_PARAMETER_UINT32_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_MAX_QUANT,
++
++	/** @ref MMAL_PARAMETER_VIDEO_ENCODE_RC_MODEL_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_RC_MODEL,
++
++	MMAL_PARAMETER_EXTRA_BUFFERS, /**< @ref MMAL_PARAMETER_UINT32_T. */
++	/** @ref MMAL_PARAMETER_UINT32_T.
++	 * Changing this parameter from the default can reduce frame rate
++	 * because image buffers need to be re-pitched.
++	 */
++	MMAL_PARAMETER_VIDEO_ALIGN_HORIZ,
++
++	/** @ref MMAL_PARAMETER_UINT32_T.
++	 * Changing this parameter from the default can reduce frame rate
++	 * because image buffers need to be re-pitched.
++	 */
++	MMAL_PARAMETER_VIDEO_ALIGN_VERT,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T. */
++	MMAL_PARAMETER_VIDEO_DROPPABLE_PFRAMES,
++
++	/** @ref MMAL_PARAMETER_UINT32_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_INITIAL_QUANT,
++
++	/**< @ref MMAL_PARAMETER_UINT32_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_QP_P,
++
++	/**< @ref MMAL_PARAMETER_UINT32_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_RC_SLICE_DQUANT,
++
++	/** @ref MMAL_PARAMETER_UINT32_T */
++	MMAL_PARAMETER_VIDEO_ENCODE_FRAME_LIMIT_BITS,
++
++	/** @ref MMAL_PARAMETER_UINT32_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_PEAK_RATE,
++
++	/* H264 specific parameters */
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_H264_DISABLE_CABAC,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_H264_LOW_LATENCY,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_H264_AU_DELIMITERS,
++
++	/** @ref MMAL_PARAMETER_UINT32_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_H264_DEBLOCK_IDC,
++
++	/** @ref MMAL_PARAMETER_VIDEO_ENCODER_H264_MB_INTRA_MODES_T. */
++	MMAL_PARAMETER_VIDEO_ENCODE_H264_MB_INTRA_MODE,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_VIDEO_ENCODE_HEADER_ON_OPEN,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_VIDEO_ENCODE_PRECODE_FOR_QP,
++
++	/** @ref MMAL_PARAMETER_VIDEO_DRM_INIT_INFO_T. */
++	MMAL_PARAMETER_VIDEO_DRM_INIT_INFO,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_VIDEO_TIMESTAMP_FIFO,
++
++	/** @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_VIDEO_DECODE_ERROR_CONCEALMENT,
++
++	/** @ref MMAL_PARAMETER_VIDEO_DRM_PROTECT_BUFFER_T. */
++	MMAL_PARAMETER_VIDEO_DRM_PROTECT_BUFFER,
++
++	/** @ref MMAL_PARAMETER_BYTES_T */
++	MMAL_PARAMETER_VIDEO_DECODE_CONFIG_VD3,
++
++	/**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_VIDEO_ENCODE_H264_VCL_HRD_PARAMETERS,
++
++	/**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_VIDEO_ENCODE_H264_LOW_DELAY_HRD_FLAG,
++
++	/**< @ref MMAL_PARAMETER_BOOLEAN_T */
++	MMAL_PARAMETER_VIDEO_ENCODE_INLINE_HEADER
++};
++
++/** Valid mirror modes */
++enum mmal_parameter_mirror {
++	MMAL_PARAM_MIRROR_NONE,
++	MMAL_PARAM_MIRROR_VERTICAL,
++	MMAL_PARAM_MIRROR_HORIZONTAL,
++	MMAL_PARAM_MIRROR_BOTH,
++};
++
++enum mmal_parameter_displaytransform {
++	MMAL_DISPLAY_ROT0 = 0,
++	MMAL_DISPLAY_MIRROR_ROT0 = 1,
++	MMAL_DISPLAY_MIRROR_ROT180 = 2,
++	MMAL_DISPLAY_ROT180 = 3,
++	MMAL_DISPLAY_MIRROR_ROT90 = 4,
++	MMAL_DISPLAY_ROT270 = 5,
++	MMAL_DISPLAY_ROT90 = 6,
++	MMAL_DISPLAY_MIRROR_ROT270 = 7,
++};
++
++enum mmal_parameter_displaymode {
++	MMAL_DISPLAY_MODE_FILL = 0,
++	MMAL_DISPLAY_MODE_LETTERBOX = 1,
++};
++
++enum mmal_parameter_displayset {
++	MMAL_DISPLAY_SET_NONE = 0,
++	MMAL_DISPLAY_SET_NUM = 1,
++	MMAL_DISPLAY_SET_FULLSCREEN = 2,
++	MMAL_DISPLAY_SET_TRANSFORM = 4,
++	MMAL_DISPLAY_SET_DEST_RECT = 8,
++	MMAL_DISPLAY_SET_SRC_RECT = 0x10,
++	MMAL_DISPLAY_SET_MODE = 0x20,
++	MMAL_DISPLAY_SET_PIXEL = 0x40,
++	MMAL_DISPLAY_SET_NOASPECT = 0x80,
++	MMAL_DISPLAY_SET_LAYER = 0x100,
++	MMAL_DISPLAY_SET_COPYPROTECT = 0x200,
++	MMAL_DISPLAY_SET_ALPHA = 0x400,
++};
++
++/* rectangle, used lots so it gets its own struct */
++struct vchiq_mmal_rect {
++	s32 x;
++	s32 y;
++	s32 width;
++	s32 height;
++};
++
++struct mmal_parameter_displayregion {
++	/** Bitfield that indicates which fields are set and should be
++	 * used. All other fields will maintain their current value.
++	 * \ref MMAL_DISPLAYSET_T defines the bits that can be
++	 * combined.
++	 */
++	u32 set;
++
++	/** Describes the display output device, with 0 typically
++	 * being a directly connected LCD display.  The actual values
++	 * will depend on the hardware.  Code using hard-wired numbers
++	 * (e.g. 2) is certain to fail.
++	 */
++
++	u32 display_num;
++	/** Indicates that we are using the full device screen area,
++	 * rather than a window of the display.  If zero, then
++	 * dest_rect is used to specify a region of the display to
++	 * use.
++	 */
++
++	s32 fullscreen;
++	/** Indicates any rotation or flipping used to map frames onto
++	 * the natural display orientation.
++	 */
++	u32 transform; /* enum mmal_parameter_displaytransform */
++
++	/** Where to display the frame within the screen, if
++	 * fullscreen is zero.
++	 */
++	struct vchiq_mmal_rect dest_rect;
++
++	/** Indicates which area of the frame to display. If all
++	 * values are zero, the whole frame will be used.
++	 */
++	struct vchiq_mmal_rect src_rect;
++
++	/** If set to non-zero, indicates that any display scaling
++	 * should disregard the aspect ratio of the frame region being
++	 * displayed.
++	 */
++	s32 noaspect;
++
++	/** Indicates how the image should be scaled to fit the
++	 * display. \code MMAL_DISPLAY_MODE_FILL \endcode indicates
++	 * that the image should fill the screen by potentially
++	 * cropping the frames.  Setting \code mode \endcode to \code
++	 * MMAL_DISPLAY_MODE_LETTERBOX \endcode indicates that all the
++	 * source region should be displayed and black bars added if
++	 * necessary.
++	 */
++	u32 mode; /* enum mmal_parameter_displaymode */
++
++	/** If non-zero, defines the width of a source pixel relative
++	 * to \code pixel_y \endcode.  If zero, then pixels default to
++	 * being square.
++	 */
++	u32 pixel_x;
++
++	/** If non-zero, defines the height of a source pixel relative
++	 * to \code pixel_x \endcode.  If zero, then pixels default to
++	 * being square.
++	 */
++	u32 pixel_y;
++
++	/** Sets the relative depth of the images, with greater values
++	 * being in front of smaller values.
++	 */
++	u32 layer;
++
++	/** Set to non-zero to ensure copy protection is used on
++	 * output.
++	 */
++	s32 copyprotect_required;
++
++	/** Level of opacity of the layer, where zero is fully
++	 * transparent and 255 is fully opaque.
++	 */
++	u32 alpha;
++};
++
++#define MMAL_MAX_IMAGEFX_PARAMETERS 5
++
++struct mmal_parameter_imagefx_parameters {
++	enum mmal_parameter_imagefx effect;
++	u32 num_effect_params;
++	u32 effect_parameter[MMAL_MAX_IMAGEFX_PARAMETERS];
++};
++
++#define MMAL_PARAMETER_CAMERA_INFO_MAX_CAMERAS 4
++#define MMAL_PARAMETER_CAMERA_INFO_MAX_FLASHES 2
++#define MMAL_PARAMETER_CAMERA_INFO_MAX_STR_LEN 16
++
++struct mmal_parameter_camera_info_camera_t {
++	u32    port_id;
++	u32    max_width;
++	u32    max_height;
++	u32    lens_present;
++	u8     camera_name[MMAL_PARAMETER_CAMERA_INFO_MAX_STR_LEN];
++};
++
++enum mmal_parameter_camera_info_flash_type_t {
++	/* Make values explicit to ensure they match values in config ini */
++	MMAL_PARAMETER_CAMERA_INFO_FLASH_TYPE_XENON = 0,
++	MMAL_PARAMETER_CAMERA_INFO_FLASH_TYPE_LED   = 1,
++	MMAL_PARAMETER_CAMERA_INFO_FLASH_TYPE_OTHER = 2,
++	MMAL_PARAMETER_CAMERA_INFO_FLASH_TYPE_MAX = 0x7FFFFFFF
++};
++
++struct mmal_parameter_camera_info_flash_t {
++	enum mmal_parameter_camera_info_flash_type_t flash_type;
++};
++
++struct mmal_parameter_camera_info_t {
++	u32                            num_cameras;
++	u32                            num_flashes;
++	struct mmal_parameter_camera_info_camera_t
++				cameras[MMAL_PARAMETER_CAMERA_INFO_MAX_CAMERAS];
++	struct mmal_parameter_camera_info_flash_t
++				flashes[MMAL_PARAMETER_CAMERA_INFO_MAX_FLASHES];
++};
++
++#endif
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.c b/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.c
+new file mode 100644
+index 000000000000..c062c40b2847
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.c
+@@ -0,0 +1,2098 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ *
++ * V4L2 driver MMAL vchiq interface code
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/errno.h>
++#include <linux/kernel.h>
++#include <linux/mutex.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/completion.h>
++#include <linux/vmalloc.h>
++#include <linux/btree.h>
++#include <asm/cacheflush.h>
++
++#include "mmal-common.h"
++#include "mmal-parameters.h"
++#include "mmal-vchiq.h"
++#include "mmal-msg.h"
++
++#if defined(CONFIG_BCM_VC_SM_CMA)
++#include "vc-sm-cma/vc_sm_knl.h"
++#endif
++
++#define USE_VCHIQ_ARM
++#include "interface/vchi/vchi.h"
++
++/* maximum number of components supported */
++#define VCHIQ_MMAL_MAX_COMPONENTS 10
++
++/*#define FULL_MSG_DUMP 1*/
++
++#ifdef DEBUG
++static const char *const msg_type_names[] = {
++	"UNKNOWN",
++	"QUIT",
++	"SERVICE_CLOSED",
++	"GET_VERSION",
++	"COMPONENT_CREATE",
++	"COMPONENT_DESTROY",
++	"COMPONENT_ENABLE",
++	"COMPONENT_DISABLE",
++	"PORT_INFO_GET",
++	"PORT_INFO_SET",
++	"PORT_ACTION",
++	"BUFFER_FROM_HOST",
++	"BUFFER_TO_HOST",
++	"GET_STATS",
++	"PORT_PARAMETER_SET",
++	"PORT_PARAMETER_GET",
++	"EVENT_TO_HOST",
++	"GET_CORE_STATS_FOR_PORT",
++	"OPAQUE_ALLOCATOR",
++	"CONSUME_MEM",
++	"LMK",
++	"OPAQUE_ALLOCATOR_DESC",
++	"DRM_GET_LHS32",
++	"DRM_GET_TIME",
++	"BUFFER_FROM_HOST_ZEROLEN",
++	"PORT_FLUSH",
++	"HOST_LOG",
++};
++#endif
++
++static const char *const port_action_type_names[] = {
++	"UNKNOWN",
++	"ENABLE",
++	"DISABLE",
++	"FLUSH",
++	"CONNECT",
++	"DISCONNECT",
++	"SET_REQUIREMENTS",
++};
++
++#if defined(DEBUG)
++#if defined(FULL_MSG_DUMP)
++#define DBG_DUMP_MSG(MSG, MSG_LEN, TITLE)				\
++	do {								\
++		pr_debug(TITLE" type:%s(%d) length:%d\n",		\
++			 msg_type_names[(MSG)->h.type],			\
++			 (MSG)->h.type, (MSG_LEN));			\
++		print_hex_dump(KERN_DEBUG, "<<h: ", DUMP_PREFIX_OFFSET,	\
++			       16, 4, (MSG),				\
++			       sizeof(struct mmal_msg_header), 1);	\
++		print_hex_dump(KERN_DEBUG, "<<p: ", DUMP_PREFIX_OFFSET,	\
++			       16, 4,					\
++			       ((u8 *)(MSG)) + sizeof(struct mmal_msg_header),\
++			       (MSG_LEN) - sizeof(struct mmal_msg_header), 1); \
++	} while (0)
++#else
++#define DBG_DUMP_MSG(MSG, MSG_LEN, TITLE)				\
++	{								\
++		pr_debug(TITLE" type:%s(%d) length:%d\n",		\
++			 msg_type_names[(MSG)->h.type],			\
++			 (MSG)->h.type, (MSG_LEN));			\
++	}
++#endif
++#else
++#define DBG_DUMP_MSG(MSG, MSG_LEN, TITLE)
++#endif
++
++struct vchiq_mmal_instance;
++
++/* normal message context */
++struct mmal_msg_context {
++	struct vchiq_mmal_instance *instance;
++	u32 handle;
++
++	union {
++		struct {
++			/* work struct for buffer_cb callback */
++			struct work_struct work;
++			/* work struct for defered callback */
++			struct work_struct buffer_to_host_work;
++			/* mmal instance */
++			struct vchiq_mmal_instance *instance;
++			/* mmal port */
++			struct vchiq_mmal_port *port;
++			/* actual buffer used to store bulk reply */
++			struct mmal_buffer *buffer;
++			/* amount of buffer used */
++			unsigned long buffer_used;
++			/* MMAL buffer flags */
++			u32 mmal_flags;
++			/* Presentation and Decode timestamps */
++			s64 pts;
++			s64 dts;
++
++			int status;	/* context status */
++
++		} bulk;		/* bulk data */
++
++		struct {
++			/* message handle to release */
++			VCHI_HELD_MSG_T msg_handle;
++			/* pointer to received message */
++			struct mmal_msg *msg;
++			/* received message length */
++			u32 msg_len;
++			/* completion upon reply */
++			struct completion cmplt;
++		} sync;		/* synchronous response */
++	} u;
++
++};
++
++struct vchiq_mmal_context_map {
++	/* ensure serialized access to the btree(contention should be low) */
++	struct mutex lock;
++	struct btree_head32 btree_head;
++	u32 last_handle;
++};
++
++struct vchiq_mmal_instance {
++	VCHI_SERVICE_HANDLE_T handle;
++
++	/* ensure serialised access to service */
++	struct mutex vchiq_mutex;
++
++	/* vmalloc page to receive scratch bulk xfers into */
++	void *bulk_scratch;
++
++	/* mapping table between context handles and mmal_msg_contexts */
++	struct vchiq_mmal_context_map context_map;
++
++	/* component to use next */
++	int component_idx;
++	struct vchiq_mmal_component component[VCHIQ_MMAL_MAX_COMPONENTS];
++};
++
++static int __must_check
++mmal_context_map_init(struct vchiq_mmal_context_map *context_map)
++{
++	mutex_init(&context_map->lock);
++	context_map->last_handle = 0;
++	return btree_init32(&context_map->btree_head);
++}
++
++static void mmal_context_map_destroy(struct vchiq_mmal_context_map *context_map)
++{
++	mutex_lock(&context_map->lock);
++	btree_destroy32(&context_map->btree_head);
++	mutex_unlock(&context_map->lock);
++}
++
++static u32
++mmal_context_map_create_handle(struct vchiq_mmal_context_map *context_map,
++			       struct mmal_msg_context *msg_context,
++			       gfp_t gfp)
++{
++	u32 handle;
++
++	mutex_lock(&context_map->lock);
++
++	while (1) {
++		/* just use a simple count for handles, but do not use 0 */
++		context_map->last_handle++;
++		if (!context_map->last_handle)
++			context_map->last_handle++;
++
++		handle = context_map->last_handle;
++
++		/* check if the handle is already in use */
++		if (!btree_lookup32(&context_map->btree_head, handle))
++			break;
++	}
++
++	if (btree_insert32(&context_map->btree_head, handle,
++			   msg_context, gfp)) {
++		/* probably out of memory */
++		mutex_unlock(&context_map->lock);
++		return 0;
++	}
++
++	mutex_unlock(&context_map->lock);
++	return handle;
++}
++
++static struct mmal_msg_context *
++mmal_context_map_lookup_handle(struct vchiq_mmal_context_map *context_map,
++			       u32 handle)
++{
++	struct mmal_msg_context *msg_context;
++
++	if (!handle)
++		return NULL;
++
++	mutex_lock(&context_map->lock);
++
++	msg_context = btree_lookup32(&context_map->btree_head, handle);
++
++	mutex_unlock(&context_map->lock);
++	return msg_context;
++}
++
++static void
++mmal_context_map_destroy_handle(struct vchiq_mmal_context_map *context_map,
++				u32 handle)
++{
++	mutex_lock(&context_map->lock);
++	btree_remove32(&context_map->btree_head, handle);
++	mutex_unlock(&context_map->lock);
++}
++
++static struct mmal_msg_context *
++get_msg_context(struct vchiq_mmal_instance *instance)
++{
++	struct mmal_msg_context *msg_context;
++
++	/* todo: should this be allocated from a pool to avoid kzalloc */
++	msg_context = kzalloc(sizeof(*msg_context), GFP_KERNEL);
++
++	if (!msg_context)
++		return ERR_PTR(-ENOMEM);
++
++	msg_context->instance = instance;
++	msg_context->handle =
++		mmal_context_map_create_handle(&instance->context_map,
++					       msg_context,
++					       GFP_KERNEL);
++
++	if (!msg_context->handle) {
++		kfree(msg_context);
++		return ERR_PTR(-ENOMEM);
++	}
++
++	return msg_context;
++}
++
++static struct mmal_msg_context *
++lookup_msg_context(struct vchiq_mmal_instance *instance, u32 handle)
++{
++	return mmal_context_map_lookup_handle(&instance->context_map,
++		handle);
++}
++
++static void
++release_msg_context(struct mmal_msg_context *msg_context)
++{
++	mmal_context_map_destroy_handle(&msg_context->instance->context_map,
++					msg_context->handle);
++	kfree(msg_context);
++}
++
++/* deals with receipt of event to host message */
++static void event_to_host_cb(struct vchiq_mmal_instance *instance,
++			     struct mmal_msg *msg, u32 msg_len)
++{
++	pr_debug("unhandled event\n");
++	pr_debug("component:%u port type:%d num:%d cmd:0x%x length:%d\n",
++		 msg->u.event_to_host.client_component,
++		 msg->u.event_to_host.port_type,
++		 msg->u.event_to_host.port_num,
++		 msg->u.event_to_host.cmd, msg->u.event_to_host.length);
++}
++
++/* workqueue scheduled callback
++ *
++ * we do this because it is important we do not call any other vchiq
++ * sync calls from witin the message delivery thread
++ */
++static void buffer_work_cb(struct work_struct *work)
++{
++	struct mmal_msg_context *msg_context =
++		container_of(work, struct mmal_msg_context, u.bulk.work);
++	struct mmal_buffer *buffer = msg_context->u.bulk.buffer;
++
++	pr_err("%s: ctx: %p, buf %p, idx %u\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer,
++			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++
++	buffer->length = msg_context->u.bulk.buffer_used;
++	buffer->mmal_flags = msg_context->u.bulk.mmal_flags;
++	buffer->dts = msg_context->u.bulk.dts;
++	buffer->pts = msg_context->u.bulk.pts;
++
++	msg_context->u.bulk.port->buffer_cb(msg_context->u.bulk.instance,
++					    msg_context->u.bulk.port,
++					    msg_context->u.bulk.status,
++					    msg_context->u.bulk.buffer);
++}
++
++/* workqueue scheduled callback to handle receiving buffers
++ *
++ * VCHI will allow up to 4 bulk receives to be scheduled before blocking.
++ * If we block in the service_callback context then we can't process the
++ * VCHI_CALLBACK_BULK_RECEIVED message that would otherwise allow the blocked
++ * vchi_bulk_queue_receive() call to complete.
++ */
++static void buffer_to_host_work_cb(struct work_struct *work)
++{
++	struct mmal_msg_context *msg_context =
++		container_of(work, struct mmal_msg_context,
++			     u.bulk.buffer_to_host_work);
++	struct vchiq_mmal_instance *instance = msg_context->instance;
++	int ret;
++
++	pr_err("%s: ctx: %p, buf %p, idx %u\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer,
++			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++
++	/* queue the bulk submission */
++	vchi_service_use(instance->handle);
++	ret = vchi_bulk_queue_receive(instance->handle,
++				      msg_context->u.bulk.buffer->buffer,
++				      /* Actual receive needs to be a multiple
++				       * of 4 bytes
++				       */
++				      (msg_context->u.bulk.buffer_used + 3) & ~3,
++				      VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE |
++				      VCHI_FLAGS_BLOCK_UNTIL_QUEUED,
++				      msg_context);
++
++	vchi_service_release(instance->handle);
++
++	if (ret != 0)
++		pr_err("%s: ctx: %p, vchi_bulk_queue_receive failed %d\n",
++		       __func__, msg_context, ret);
++
++	pr_err("%s: exit ctx: %p, buf %p, idx %u\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer,
++			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++}
++
++/* enqueue a bulk receive for a given message context */
++static int bulk_receive(struct vchiq_mmal_instance *instance,
++			struct mmal_msg *msg,
++			struct mmal_msg_context *msg_context)
++{
++	unsigned long rd_len;
++
++	pr_err("%s: ctx: %p,\n", __func__, msg_context);
++
++	rd_len = msg->u.buffer_from_host.buffer_header.length;
++
++	if (!msg_context->u.bulk.buffer) {
++		pr_err("bulk.buffer not configured - error in buffer_from_host\n");
++
++		/* todo: this is a serious error, we should never have
++		 * committed a buffer_to_host operation to the mmal
++		 * port without the buffer to back it up (underflow
++		 * handling) and there is no obvious way to deal with
++		 * this - how is the mmal servie going to react when
++		 * we fail to do the xfer and reschedule a buffer when
++		 * it arrives? perhaps a starved flag to indicate a
++		 * waiting bulk receive?
++		 */
++
++		return -EINVAL;
++	}
++
++	/* ensure we do not overrun the available buffer */
++	if (rd_len > msg_context->u.bulk.buffer->buffer_size) {
++		rd_len = msg_context->u.bulk.buffer->buffer_size;
++		pr_warn("short read as not enough receive buffer space\n");
++		/* todo: is this the correct response, what happens to
++		 * the rest of the message data?
++		 */
++	}
++
++	/* store length */
++	msg_context->u.bulk.buffer_used = rd_len;
++	msg_context->u.bulk.mmal_flags =
++	    msg->u.buffer_from_host.buffer_header.flags;
++	msg_context->u.bulk.dts = msg->u.buffer_from_host.buffer_header.dts;
++	msg_context->u.bulk.pts = msg->u.buffer_from_host.buffer_header.pts;
++
++	schedule_work(&msg_context->u.bulk.buffer_to_host_work);
++
++	pr_err("%s: exit ctx: %p, buf %p, idx %u\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer,
++			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++
++	return 0;
++}
++
++/* enque a dummy bulk receive for a given message context */
++static int dummy_bulk_receive(struct vchiq_mmal_instance *instance,
++			      struct mmal_msg_context *msg_context)
++{
++	int ret;
++
++	pr_err("%s: ctx: %p,\n", __func__, msg_context);
++
++	/* zero length indicates this was a dummy transfer */
++	msg_context->u.bulk.buffer_used = 0;
++
++	/* queue the bulk submission */
++	vchi_service_use(instance->handle);
++
++	ret = vchi_bulk_queue_receive(instance->handle,
++				      instance->bulk_scratch,
++				      8,
++				      VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE |
++				      VCHI_FLAGS_BLOCK_UNTIL_QUEUED,
++				      msg_context);
++
++	vchi_service_release(instance->handle);
++
++	pr_err("%s: exit ctx: %p,\n", __func__, msg_context);
++	return ret;
++}
++
++/* data in message, memcpy from packet into output buffer */
++static int inline_receive(struct vchiq_mmal_instance *instance,
++			  struct mmal_msg *msg,
++			  struct mmal_msg_context *msg_context)
++{
++	pr_err("%s: ctx: %p,\n", __func__, msg_context);
++
++	memcpy(msg_context->u.bulk.buffer->buffer,
++	       msg->u.buffer_from_host.short_data,
++	       msg->u.buffer_from_host.payload_in_message);
++
++	msg_context->u.bulk.buffer_used =
++	    msg->u.buffer_from_host.payload_in_message;
++
++	pr_err("%s: exit ctx: %p, buf %p, idx %u\n", __func__, msg_context,
++	       msg_context->u.bulk.buffer,
++			msg_context->u.bulk.buffer->vb2->vb2_buf.index);
++	return 0;
++}
++
++/* queue the buffer availability with MMAL_MSG_TYPE_BUFFER_FROM_HOST */
++static int
++buffer_from_host(struct vchiq_mmal_instance *instance,
++		 struct vchiq_mmal_port *port, struct mmal_buffer *buf)
++{
++	struct mmal_msg_context *msg_context;
++	struct mmal_msg m;
++	int ret;
++
++	if (!port->enabled)
++		return -EINVAL;
++
++	pr_debug("instance:%p buffer:%p, idx: %u\n", instance->handle, buf,
++		 buf->vb2->vb2_buf.index);
++
++	/* get context */
++	if (!buf->msg_context) {
++		pr_err("%s: msg_context not allocated, buf %p\n", __func__,
++		       buf);
++		return -EINVAL;
++	}
++	msg_context = (struct mmal_msg_context *)buf->msg_context;
++
++	/* store bulk message context for when data arrives */
++	msg_context->u.bulk.instance = instance;
++	msg_context->u.bulk.port = port;
++	msg_context->u.bulk.buffer = buf;
++	msg_context->u.bulk.buffer_used = 0;
++
++	/* initialise work structure ready to schedule callback */
++	INIT_WORK(&msg_context->u.bulk.work, buffer_work_cb);
++	INIT_WORK(&msg_context->u.bulk.buffer_to_host_work,
++		  buffer_to_host_work_cb);
++
++	/* prep the buffer from host message */
++	memset(&m, 0xbc, sizeof(m));	/* just to make debug clearer */
++
++	m.h.type = MMAL_MSG_TYPE_BUFFER_FROM_HOST;
++	m.h.magic = MMAL_MAGIC;
++	m.h.context = msg_context->handle;
++	m.h.status = 0;
++
++	/* drvbuf is our private data passed back */
++	m.u.buffer_from_host.drvbuf.magic = MMAL_MAGIC;
++	m.u.buffer_from_host.drvbuf.component_handle = port->component->handle;
++	m.u.buffer_from_host.drvbuf.port_handle = port->handle;
++	m.u.buffer_from_host.drvbuf.client_context = msg_context->handle;
++
++	/* buffer header */
++	m.u.buffer_from_host.buffer_header.cmd = 0;
++	if (port->zero_copy) {
++#if defined(CONFIG_BCM_VC_SM_CMA)
++		m.u.buffer_from_host.buffer_header.data = buf->vc_handle;
++#else
++		pr_warn("%s: port set to zero_copy but no VCSM", __func__);
++		m.u.buffer_from_host.buffer_header.data = 0;
++#endif
++	} else {
++		m.u.buffer_from_host.buffer_header.data =
++			(u32)(unsigned long)buf->buffer;
++	}
++
++	m.u.buffer_from_host.buffer_header.alloc_size = buf->buffer_size;
++	if (port->type == MMAL_PORT_TYPE_OUTPUT) {
++		m.u.buffer_from_host.buffer_header.length = 0;	/* nothing used yet */
++		m.u.buffer_from_host.buffer_header.offset = 0;	/* no offset */
++		m.u.buffer_from_host.buffer_header.flags = 0;	/* no flags */
++		m.u.buffer_from_host.buffer_header.pts = MMAL_TIME_UNKNOWN;
++		m.u.buffer_from_host.buffer_header.dts = MMAL_TIME_UNKNOWN;
++	} else {
++		m.u.buffer_from_host.buffer_header.length = buf->length;
++		m.u.buffer_from_host.buffer_header.offset = 0;
++		m.u.buffer_from_host.buffer_header.flags = buf->mmal_flags;
++		m.u.buffer_from_host.buffer_header.pts = buf->pts;
++		m.u.buffer_from_host.buffer_header.dts = buf->dts;
++	}
++
++	/* clear buffer type sepecific data */
++	memset(&m.u.buffer_from_host.buffer_header_type_specific, 0,
++	       sizeof(m.u.buffer_from_host.buffer_header_type_specific));
++
++	/* no payload in message */
++	m.u.buffer_from_host.payload_in_message = 0;
++
++	vchi_service_use(instance->handle);
++
++	ret = vchi_queue_kernel_message(instance->handle,
++					&m,
++					sizeof(struct mmal_msg_header) +
++					sizeof(m.u.buffer_from_host));
++
++	vchi_service_release(instance->handle);
++
++	return ret;
++}
++
++/* deals with receipt of buffer to host message */
++static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
++			      struct mmal_msg *msg, u32 msg_len)
++{
++	struct mmal_msg_context *msg_context;
++	u32 handle;
++
++	pr_err("%s: instance:%p msg:%p msg_len:%d\n",
++	       __func__, instance, msg, msg_len);
++
++	if (msg->u.buffer_from_host.drvbuf.magic == MMAL_MAGIC) {
++		handle = msg->u.buffer_from_host.drvbuf.client_context;
++		msg_context = lookup_msg_context(instance, handle);
++
++		if (!msg_context) {
++			pr_err("drvbuf.client_context(%u) is invalid\n",
++			       handle);
++			return;
++		}
++	} else {
++		pr_err("MMAL_MSG_TYPE_BUFFER_TO_HOST with bad magic\n");
++		return;
++	}
++
++	if (msg->h.status != MMAL_MSG_STATUS_SUCCESS) {
++		/* message reception had an error */
++		//pr_warn
++		pr_err("error %d in reply\n", msg->h.status);
++
++		msg_context->u.bulk.status = msg->h.status;
++
++	} else if (msg->u.buffer_from_host.is_zero_copy) {
++		/*
++		 * Zero copy buffer, so nothing to do.
++		 * Copy buffer info and make callback.
++		 */
++		pr_err("zero copy buffer\n");
++		msg_context->u.bulk.buffer_used =
++				msg->u.buffer_from_host.buffer_header.length;
++		msg_context->u.bulk.mmal_flags =
++				msg->u.buffer_from_host.buffer_header.flags;
++		msg_context->u.bulk.dts =
++				msg->u.buffer_from_host.buffer_header.dts;
++		msg_context->u.bulk.pts =
++				msg->u.buffer_from_host.buffer_header.pts;
++
++	} else if (msg->u.buffer_from_host.buffer_header.length == 0) {
++		/* empty buffer */
++		pr_err("empty buffer\n");
++		if (msg->u.buffer_from_host.buffer_header.flags &
++		    MMAL_BUFFER_HEADER_FLAG_EOS) {
++			msg_context->u.bulk.status =
++			    dummy_bulk_receive(instance, msg_context);
++			if (msg_context->u.bulk.status == 0)
++				return;	/* successful bulk submission, bulk
++					 * completion will trigger callback
++					 */
++		} else {
++			/* do callback with empty buffer - not EOS though */
++			msg_context->u.bulk.status = 0;
++			msg_context->u.bulk.buffer_used = 0;
++		}
++	} else if (msg->u.buffer_from_host.payload_in_message == 0) {
++		/* data is not in message, queue a bulk receive */
++		pr_err("payload in message\n");
++		msg_context->u.bulk.status =
++		    bulk_receive(instance, msg, msg_context);
++		if (msg_context->u.bulk.status == 0)
++			return;	/* successful bulk submission, bulk
++				 * completion will trigger callback
++				 */
++
++		/* failed to submit buffer, this will end badly */
++		pr_err("error %d on bulk submission\n",
++		       msg_context->u.bulk.status);
++
++	} else if (msg->u.buffer_from_host.payload_in_message <=
++		   MMAL_VC_SHORT_DATA) {
++		/* data payload within message */
++		pr_err("inline receive\n");
++		msg_context->u.bulk.status = inline_receive(instance, msg,
++							    msg_context);
++	} else {
++		pr_err("message with invalid short payload\n");
++
++		/* signal error */
++		msg_context->u.bulk.status = -EINVAL;
++		msg_context->u.bulk.buffer_used =
++		    msg->u.buffer_from_host.payload_in_message;
++	}
++
++	/* schedule the port callback */
++	schedule_work(&msg_context->u.bulk.work);
++}
++
++static void bulk_receive_cb(struct vchiq_mmal_instance *instance,
++			    struct mmal_msg_context *msg_context)
++{
++	msg_context->u.bulk.status = 0;
++
++	/* schedule the port callback */
++	schedule_work(&msg_context->u.bulk.work);
++}
++
++static void bulk_abort_cb(struct vchiq_mmal_instance *instance,
++			  struct mmal_msg_context *msg_context)
++{
++	pr_err("%s: bulk ABORTED msg_context:%p\n", __func__, msg_context);
++
++	msg_context->u.bulk.status = -EINTR;
++
++	schedule_work(&msg_context->u.bulk.work);
++}
++
++/* incoming event service callback */
++static void service_callback(void *param,
++			     const VCHI_CALLBACK_REASON_T reason,
++			     void *bulk_ctx)
++{
++	struct vchiq_mmal_instance *instance = param;
++	int status;
++	u32 msg_len;
++	struct mmal_msg *msg;
++	VCHI_HELD_MSG_T msg_handle;
++	struct mmal_msg_context *msg_context;
++
++	if (!instance) {
++		pr_err("Message callback passed NULL instance\n");
++		return;
++	}
++
++	switch (reason) {
++	case VCHI_CALLBACK_MSG_AVAILABLE:
++		status = vchi_msg_hold(instance->handle, (void **)&msg,
++				       &msg_len, VCHI_FLAGS_NONE, &msg_handle);
++		if (status) {
++			pr_err("Unable to dequeue a message (%d)\n", status);
++			break;
++		}
++
++		DBG_DUMP_MSG(msg, msg_len, "<<< reply message");
++
++		/* handling is different for buffer messages */
++		switch (msg->h.type) {
++		case MMAL_MSG_TYPE_BUFFER_FROM_HOST:
++			vchi_held_msg_release(&msg_handle);
++			break;
++
++		case MMAL_MSG_TYPE_EVENT_TO_HOST:
++			event_to_host_cb(instance, msg, msg_len);
++			vchi_held_msg_release(&msg_handle);
++
++			break;
++
++		case MMAL_MSG_TYPE_BUFFER_TO_HOST:
++			buffer_to_host_cb(instance, msg, msg_len);
++			vchi_held_msg_release(&msg_handle);
++			break;
++
++		default:
++			/* messages dependent on header context to complete */
++			if (!msg->h.context) {
++				pr_err("received message context was null!\n");
++				vchi_held_msg_release(&msg_handle);
++				break;
++			}
++
++			msg_context = lookup_msg_context(instance,
++							 msg->h.context);
++			if (!msg_context) {
++				pr_err("received invalid message context %u!\n",
++				       msg->h.context);
++				vchi_held_msg_release(&msg_handle);
++				break;
++			}
++
++			/* fill in context values */
++			msg_context->u.sync.msg_handle = msg_handle;
++			msg_context->u.sync.msg = msg;
++			msg_context->u.sync.msg_len = msg_len;
++
++			/* todo: should this check (completion_done()
++			 * == 1) for no one waiting? or do we need a
++			 * flag to tell us the completion has been
++			 * interrupted so we can free the message and
++			 * its context. This probably also solves the
++			 * message arriving after interruption todo
++			 * below
++			 */
++
++			/* complete message so caller knows it happened */
++			complete(&msg_context->u.sync.cmplt);
++			break;
++		}
++
++		break;
++
++	case VCHI_CALLBACK_BULK_RECEIVED:
++		bulk_receive_cb(instance, bulk_ctx);
++		break;
++
++	case VCHI_CALLBACK_BULK_RECEIVE_ABORTED:
++		bulk_abort_cb(instance, bulk_ctx);
++		break;
++
++	case VCHI_CALLBACK_SERVICE_CLOSED:
++		/* TODO: consider if this requires action if received when
++		 * driver is not explicitly closing the service
++		 */
++		break;
++
++	default:
++		pr_err("Received unhandled message reason %d\n", reason);
++		break;
++	}
++}
++
++static int send_synchronous_mmal_msg(struct vchiq_mmal_instance *instance,
++				     struct mmal_msg *msg,
++				     unsigned int payload_len,
++				     struct mmal_msg **msg_out,
++				     VCHI_HELD_MSG_T *msg_handle_out)
++{
++	struct mmal_msg_context *msg_context;
++	int ret;
++
++	/* payload size must not cause message to exceed max size */
++	if (payload_len >
++	    (MMAL_MSG_MAX_SIZE - sizeof(struct mmal_msg_header))) {
++		pr_err("payload length %d exceeds max:%d\n", payload_len,
++		       (int)(MMAL_MSG_MAX_SIZE -
++			    sizeof(struct mmal_msg_header)));
++		return -EINVAL;
++	}
++
++	msg_context = get_msg_context(instance);
++	if (IS_ERR(msg_context))
++		return PTR_ERR(msg_context);
++
++	init_completion(&msg_context->u.sync.cmplt);
++
++	msg->h.magic = MMAL_MAGIC;
++	msg->h.context = msg_context->handle;
++	msg->h.status = 0;
++
++	DBG_DUMP_MSG(msg, (sizeof(struct mmal_msg_header) + payload_len),
++		     ">>> sync message");
++
++	vchi_service_use(instance->handle);
++
++	ret = vchi_queue_kernel_message(instance->handle,
++					msg,
++					sizeof(struct mmal_msg_header) +
++					payload_len);
++
++	vchi_service_release(instance->handle);
++
++	if (ret) {
++		pr_err("error %d queuing message\n", ret);
++		release_msg_context(msg_context);
++		return ret;
++	}
++
++	ret = wait_for_completion_timeout(&msg_context->u.sync.cmplt, 3 * HZ);
++	if (ret <= 0) {
++		pr_err("error %d waiting for sync completion\n", ret);
++		if (ret == 0)
++			ret = -ETIME;
++		/* todo: what happens if the message arrives after aborting */
++		release_msg_context(msg_context);
++		return ret;
++	}
++
++	*msg_out = msg_context->u.sync.msg;
++	*msg_handle_out = msg_context->u.sync.msg_handle;
++	release_msg_context(msg_context);
++
++	return 0;
++}
++
++static void dump_port_info(struct vchiq_mmal_port *port)
++{
++	pr_debug("port handle:0x%x enabled:%d\n", port->handle, port->enabled);
++
++	pr_debug("buffer minimum num:%d size:%d align:%d\n",
++		 port->minimum_buffer.num,
++		 port->minimum_buffer.size, port->minimum_buffer.alignment);
++
++	pr_debug("buffer recommended num:%d size:%d align:%d\n",
++		 port->recommended_buffer.num,
++		 port->recommended_buffer.size,
++		 port->recommended_buffer.alignment);
++
++	pr_debug("buffer current values num:%d size:%d align:%d\n",
++		 port->current_buffer.num,
++		 port->current_buffer.size, port->current_buffer.alignment);
++
++	pr_debug("elementary stream: type:%d encoding:0x%x variant:0x%x\n",
++		 port->format.type,
++		 port->format.encoding, port->format.encoding_variant);
++
++	pr_debug("		    bitrate:%d flags:0x%x\n",
++		 port->format.bitrate, port->format.flags);
++
++	if (port->format.type == MMAL_ES_TYPE_VIDEO) {
++		pr_debug
++		    ("es video format: width:%d height:%d colourspace:0x%x\n",
++		     port->es.video.width, port->es.video.height,
++		     port->es.video.color_space);
++
++		pr_debug("		 : crop xywh %d,%d,%d,%d\n",
++			 port->es.video.crop.x,
++			 port->es.video.crop.y,
++			 port->es.video.crop.width, port->es.video.crop.height);
++		pr_debug("		 : framerate %d/%d  aspect %d/%d\n",
++			 port->es.video.frame_rate.num,
++			 port->es.video.frame_rate.den,
++			 port->es.video.par.num, port->es.video.par.den);
++	}
++}
++
++static void port_to_mmal_msg(struct vchiq_mmal_port *port, struct mmal_port *p)
++{
++	/* todo do readonly fields need setting at all? */
++	p->type = port->type;
++	p->index = port->index;
++	p->index_all = 0;
++	p->is_enabled = port->enabled;
++	p->buffer_num_min = port->minimum_buffer.num;
++	p->buffer_size_min = port->minimum_buffer.size;
++	p->buffer_alignment_min = port->minimum_buffer.alignment;
++	p->buffer_num_recommended = port->recommended_buffer.num;
++	p->buffer_size_recommended = port->recommended_buffer.size;
++
++	/* only three writable fields in a port */
++	p->buffer_num = port->current_buffer.num;
++	p->buffer_size = port->current_buffer.size;
++	p->userdata = (u32)(unsigned long)port;
++}
++
++static int port_info_set(struct vchiq_mmal_instance *instance,
++			 struct vchiq_mmal_port *port)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	pr_debug("setting port info port %p\n", port);
++	if (!port)
++		return -1;
++	dump_port_info(port);
++
++	m.h.type = MMAL_MSG_TYPE_PORT_INFO_SET;
++
++	m.u.port_info_set.component_handle = port->component->handle;
++	m.u.port_info_set.port_type = port->type;
++	m.u.port_info_set.port_index = port->index;
++
++	port_to_mmal_msg(port, &m.u.port_info_set.port);
++
++	/* elementary stream format setup */
++	m.u.port_info_set.format.type = port->format.type;
++	m.u.port_info_set.format.encoding = port->format.encoding;
++	m.u.port_info_set.format.encoding_variant =
++	    port->format.encoding_variant;
++	m.u.port_info_set.format.bitrate = port->format.bitrate;
++	m.u.port_info_set.format.flags = port->format.flags;
++
++	memcpy(&m.u.port_info_set.es, &port->es,
++	       sizeof(union mmal_es_specific_format));
++
++	m.u.port_info_set.format.extradata_size = port->format.extradata_size;
++	memcpy(&m.u.port_info_set.extradata, port->format.extradata,
++	       port->format.extradata_size);
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.port_info_set),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != MMAL_MSG_TYPE_PORT_INFO_SET) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	/* return operation status */
++	ret = -rmsg->u.port_info_get_reply.status;
++
++	pr_debug("%s:result:%d component:0x%x port:%d\n", __func__, ret,
++		 port->component->handle, port->handle);
++
++release_msg:
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* use port info get message to retrieve port information */
++static int port_info_get(struct vchiq_mmal_instance *instance,
++			 struct vchiq_mmal_port *port)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	/* port info time */
++	m.h.type = MMAL_MSG_TYPE_PORT_INFO_GET;
++	m.u.port_info_get.component_handle = port->component->handle;
++	m.u.port_info_get.port_type = port->type;
++	m.u.port_info_get.index = port->index;
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.port_info_get),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != MMAL_MSG_TYPE_PORT_INFO_GET) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	/* return operation status */
++	ret = -rmsg->u.port_info_get_reply.status;
++	if (ret != MMAL_MSG_STATUS_SUCCESS)
++		goto release_msg;
++
++	if (rmsg->u.port_info_get_reply.port.is_enabled == 0)
++		port->enabled = false;
++	else
++		port->enabled = true;
++
++	/* copy the values out of the message */
++	port->handle = rmsg->u.port_info_get_reply.port_handle;
++
++	/* port type and index cached to use on port info set because
++	 * it does not use a port handle
++	 */
++	port->type = rmsg->u.port_info_get_reply.port_type;
++	pr_err("%s: port %p is of type %u\n", __func__, port, port->type);
++	port->index = rmsg->u.port_info_get_reply.port_index;
++
++	port->minimum_buffer.num =
++	    rmsg->u.port_info_get_reply.port.buffer_num_min;
++	port->minimum_buffer.size =
++	    rmsg->u.port_info_get_reply.port.buffer_size_min;
++	port->minimum_buffer.alignment =
++	    rmsg->u.port_info_get_reply.port.buffer_alignment_min;
++
++	port->recommended_buffer.alignment =
++	    rmsg->u.port_info_get_reply.port.buffer_alignment_min;
++	port->recommended_buffer.num =
++	    rmsg->u.port_info_get_reply.port.buffer_num_recommended;
++
++	port->current_buffer.num = rmsg->u.port_info_get_reply.port.buffer_num;
++	port->current_buffer.size =
++	    rmsg->u.port_info_get_reply.port.buffer_size;
++
++	/* stream format */
++	port->format.type = rmsg->u.port_info_get_reply.format.type;
++	port->format.encoding = rmsg->u.port_info_get_reply.format.encoding;
++	port->format.encoding_variant =
++	    rmsg->u.port_info_get_reply.format.encoding_variant;
++	port->format.bitrate = rmsg->u.port_info_get_reply.format.bitrate;
++	port->format.flags = rmsg->u.port_info_get_reply.format.flags;
++
++	/* elementary stream format */
++	memcpy(&port->es,
++	       &rmsg->u.port_info_get_reply.es,
++	       sizeof(union mmal_es_specific_format));
++	port->format.es = &port->es;
++
++	port->format.extradata_size =
++	    rmsg->u.port_info_get_reply.format.extradata_size;
++	memcpy(port->format.extradata,
++	       rmsg->u.port_info_get_reply.extradata,
++	       port->format.extradata_size);
++
++	pr_debug("received port info\n");
++	dump_port_info(port);
++
++release_msg:
++
++	pr_debug("%s:result:%d component:0x%x port:%d\n",
++		 __func__, ret, port->component->handle, port->handle);
++
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* create comonent on vc */
++static int create_component(struct vchiq_mmal_instance *instance,
++			    struct vchiq_mmal_component *component,
++			    const char *name)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	/* build component create message */
++	m.h.type = MMAL_MSG_TYPE_COMPONENT_CREATE;
++	m.u.component_create.client_component = (u32)(unsigned long)component;
++	strncpy(m.u.component_create.name, name,
++		sizeof(m.u.component_create.name));
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.component_create),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != m.h.type) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	ret = -rmsg->u.component_create_reply.status;
++	if (ret != MMAL_MSG_STATUS_SUCCESS)
++		goto release_msg;
++
++	/* a valid component response received */
++	component->handle = rmsg->u.component_create_reply.component_handle;
++	component->inputs = rmsg->u.component_create_reply.input_num;
++	component->outputs = rmsg->u.component_create_reply.output_num;
++	component->clocks = rmsg->u.component_create_reply.clock_num;
++
++	pr_debug("Component handle:0x%x in:%d out:%d clock:%d\n",
++		 component->handle,
++		 component->inputs, component->outputs, component->clocks);
++
++release_msg:
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* destroys a component on vc */
++static int destroy_component(struct vchiq_mmal_instance *instance,
++			     struct vchiq_mmal_component *component)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	m.h.type = MMAL_MSG_TYPE_COMPONENT_DESTROY;
++	m.u.component_destroy.component_handle = component->handle;
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.component_destroy),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != m.h.type) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	ret = -rmsg->u.component_destroy_reply.status;
++
++release_msg:
++
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* enable a component on vc */
++static int enable_component(struct vchiq_mmal_instance *instance,
++			    struct vchiq_mmal_component *component)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	m.h.type = MMAL_MSG_TYPE_COMPONENT_ENABLE;
++	m.u.component_enable.component_handle = component->handle;
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.component_enable),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != m.h.type) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	ret = -rmsg->u.component_enable_reply.status;
++
++release_msg:
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* disable a component on vc */
++static int disable_component(struct vchiq_mmal_instance *instance,
++			     struct vchiq_mmal_component *component)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	m.h.type = MMAL_MSG_TYPE_COMPONENT_DISABLE;
++	m.u.component_disable.component_handle = component->handle;
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.component_disable),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != m.h.type) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	ret = -rmsg->u.component_disable_reply.status;
++
++release_msg:
++
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* get version of mmal implementation */
++static int get_version(struct vchiq_mmal_instance *instance,
++		       u32 *major_out, u32 *minor_out)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	m.h.type = MMAL_MSG_TYPE_GET_VERSION;
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.version),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != m.h.type) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	*major_out = rmsg->u.version.major;
++	*minor_out = rmsg->u.version.minor;
++
++release_msg:
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* do a port action with a port as a parameter */
++static int port_action_port(struct vchiq_mmal_instance *instance,
++			    struct vchiq_mmal_port *port,
++			    enum mmal_msg_port_action_type action_type)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	m.h.type = MMAL_MSG_TYPE_PORT_ACTION;
++	m.u.port_action_port.component_handle = port->component->handle;
++	m.u.port_action_port.port_handle = port->handle;
++	m.u.port_action_port.action = action_type;
++
++	port_to_mmal_msg(port, &m.u.port_action_port.port);
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.port_action_port),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != MMAL_MSG_TYPE_PORT_ACTION) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	ret = -rmsg->u.port_action_reply.status;
++
++	pr_debug("%s:result:%d component:0x%x port:%d action:%s(%d)\n",
++		 __func__,
++		 ret, port->component->handle, port->handle,
++		 port_action_type_names[action_type], action_type);
++
++release_msg:
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* do a port action with handles as parameters */
++static int port_action_handle(struct vchiq_mmal_instance *instance,
++			      struct vchiq_mmal_port *port,
++			      enum mmal_msg_port_action_type action_type,
++			      u32 connect_component_handle,
++			      u32 connect_port_handle)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	m.h.type = MMAL_MSG_TYPE_PORT_ACTION;
++
++	m.u.port_action_handle.component_handle = port->component->handle;
++	m.u.port_action_handle.port_handle = port->handle;
++	m.u.port_action_handle.action = action_type;
++
++	m.u.port_action_handle.connect_component_handle =
++	    connect_component_handle;
++	m.u.port_action_handle.connect_port_handle = connect_port_handle;
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(m.u.port_action_handle),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != MMAL_MSG_TYPE_PORT_ACTION) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	ret = -rmsg->u.port_action_reply.status;
++
++	pr_debug("%s:result:%d component:0x%x port:%d action:%s(%d)" \
++		 " connect component:0x%x connect port:%d\n",
++		 __func__,
++		 ret, port->component->handle, port->handle,
++		 port_action_type_names[action_type],
++		 action_type, connect_component_handle, connect_port_handle);
++
++release_msg:
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++static int port_parameter_set(struct vchiq_mmal_instance *instance,
++			      struct vchiq_mmal_port *port,
++			      u32 parameter_id, void *value, u32 value_size)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	m.h.type = MMAL_MSG_TYPE_PORT_PARAMETER_SET;
++
++	m.u.port_parameter_set.component_handle = port->component->handle;
++	m.u.port_parameter_set.port_handle = port->handle;
++	m.u.port_parameter_set.id = parameter_id;
++	m.u.port_parameter_set.size = (2 * sizeof(u32)) + value_size;
++	memcpy(&m.u.port_parameter_set.value, value, value_size);
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					(4 * sizeof(u32)) + value_size,
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != MMAL_MSG_TYPE_PORT_PARAMETER_SET) {
++		/* got an unexpected message type in reply */
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	ret = -rmsg->u.port_parameter_set_reply.status;
++
++	pr_debug("%s:result:%d component:0x%x port:%d parameter:%d\n",
++		 __func__,
++		 ret, port->component->handle, port->handle, parameter_id);
++
++release_msg:
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++static int port_parameter_get(struct vchiq_mmal_instance *instance,
++			      struct vchiq_mmal_port *port,
++			      u32 parameter_id, void *value, u32 *value_size)
++{
++	int ret;
++	struct mmal_msg m;
++	struct mmal_msg *rmsg;
++	VCHI_HELD_MSG_T rmsg_handle;
++
++	m.h.type = MMAL_MSG_TYPE_PORT_PARAMETER_GET;
++
++	m.u.port_parameter_get.component_handle = port->component->handle;
++	m.u.port_parameter_get.port_handle = port->handle;
++	m.u.port_parameter_get.id = parameter_id;
++	m.u.port_parameter_get.size = (2 * sizeof(u32)) + *value_size;
++
++	ret = send_synchronous_mmal_msg(instance, &m,
++					sizeof(struct
++					       mmal_msg_port_parameter_get),
++					&rmsg, &rmsg_handle);
++	if (ret)
++		return ret;
++
++	if (rmsg->h.type != MMAL_MSG_TYPE_PORT_PARAMETER_GET) {
++		/* got an unexpected message type in reply */
++		pr_err("Incorrect reply type %d\n", rmsg->h.type);
++		ret = -EINVAL;
++		goto release_msg;
++	}
++
++	ret = -rmsg->u.port_parameter_get_reply.status;
++	/* port_parameter_get_reply.size includes the header,
++	 * whilst *value_size doesn't.
++	 */
++	rmsg->u.port_parameter_get_reply.size -= (2 * sizeof(u32));
++
++	if (ret || rmsg->u.port_parameter_get_reply.size > *value_size) {
++		/* Copy only as much as we have space for
++		 * but report true size of parameter
++		 */
++		memcpy(value, &rmsg->u.port_parameter_get_reply.value,
++		       *value_size);
++		*value_size = rmsg->u.port_parameter_get_reply.size;
++	} else {
++		memcpy(value, &rmsg->u.port_parameter_get_reply.value,
++		       rmsg->u.port_parameter_get_reply.size);
++	}
++
++	pr_debug("%s:result:%d component:0x%x port:%d parameter:%d\n", __func__,
++		 ret, port->component->handle, port->handle, parameter_id);
++
++release_msg:
++	vchi_held_msg_release(&rmsg_handle);
++
++	return ret;
++}
++
++/* disables a port and drains buffers from it */
++static int port_disable(struct vchiq_mmal_instance *instance,
++			struct vchiq_mmal_port *port)
++{
++	int ret;
++	struct list_head *q, *buf_head;
++	unsigned long flags = 0;
++
++	if (!port->enabled)
++		return 0;
++
++	port->enabled = false;
++
++	ret = port_action_port(instance, port,
++			       MMAL_MSG_PORT_ACTION_TYPE_DISABLE);
++	if (ret == 0) {
++		/*
++		 * Drain all queued buffers on port. This should only
++		 * apply to buffers that have been queued before the port
++		 * has been enabled. If the port has been enabled and buffers
++		 * passed, then the buffers should have been removed from this
++		 * list, and we should get the relevant callbacks via VCHIQ
++		 * to release the buffers.
++		 */
++		spin_lock_irqsave(&port->slock, flags);
++
++		list_for_each_safe(buf_head, q, &port->buffers) {
++			struct mmal_buffer *mmalbuf;
++
++			mmalbuf = list_entry(buf_head, struct mmal_buffer,
++					     list);
++			list_del(buf_head);
++			if (port->buffer_cb) {
++				mmalbuf->length = 0;
++				mmalbuf->mmal_flags = 0;
++				mmalbuf->dts = MMAL_TIME_UNKNOWN;
++				mmalbuf->pts = MMAL_TIME_UNKNOWN;
++				port->buffer_cb(instance,
++						port, 0, mmalbuf);
++			}
++		}
++
++		spin_unlock_irqrestore(&port->slock, flags);
++
++		ret = port_info_get(instance, port);
++	}
++
++	return ret;
++}
++
++/* enable a port */
++static int port_enable(struct vchiq_mmal_instance *instance,
++		       struct vchiq_mmal_port *port)
++{
++	unsigned int hdr_count;
++	struct list_head *q, *buf_head;
++	int ret;
++
++	if (port->enabled)
++		return 0;
++
++	ret = port_action_port(instance, port,
++			       MMAL_MSG_PORT_ACTION_TYPE_ENABLE);
++	if (ret)
++		goto done;
++
++	port->enabled = true;
++
++	if (port->buffer_cb) {
++		/* send buffer headers to videocore */
++		hdr_count = 1;
++		list_for_each_safe(buf_head, q, &port->buffers) {
++			struct mmal_buffer *mmalbuf;
++
++			mmalbuf = list_entry(buf_head, struct mmal_buffer,
++					     list);
++			ret = buffer_from_host(instance, port, mmalbuf);
++			pr_err("%s: Sending buf %p failed, ret %d\n", __func__, mmalbuf, ret);
++			if (ret)
++				goto done;
++
++			list_del(buf_head);
++			hdr_count++;
++			if (hdr_count > port->current_buffer.num)
++				break;
++		}
++	}
++
++	ret = port_info_get(instance, port);
++
++done:
++	return ret;
++}
++
++/* ------------------------------------------------------------------
++ * Exported API
++ *------------------------------------------------------------------
++ */
++
++int vchiq_mmal_port_set_format(struct vchiq_mmal_instance *instance,
++			       struct vchiq_mmal_port *port)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	ret = port_info_set(instance, port);
++	if (ret)
++		goto release_unlock;
++
++	/* read what has actually been set */
++	ret = port_info_get(instance, port);
++
++release_unlock:
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++int vchiq_mmal_port_parameter_set(struct vchiq_mmal_instance *instance,
++				  struct vchiq_mmal_port *port,
++				  u32 parameter, void *value, u32 value_size)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	ret = port_parameter_set(instance, port, parameter, value, value_size);
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	if (parameter == MMAL_PARAMETER_ZERO_COPY && !ret)
++		port->zero_copy = !!(*(bool *)value);
++
++	return ret;
++}
++
++int vchiq_mmal_port_parameter_get(struct vchiq_mmal_instance *instance,
++				  struct vchiq_mmal_port *port,
++				  u32 parameter, void *value, u32 *value_size)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	ret = port_parameter_get(instance, port, parameter, value, value_size);
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++/* enable a port
++ *
++ * enables a port and queues buffers for satisfying callbacks if we
++ * provide a callback handler
++ */
++int vchiq_mmal_port_enable(struct vchiq_mmal_instance *instance,
++			   struct vchiq_mmal_port *port,
++			   vchiq_mmal_buffer_cb buffer_cb)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	/* already enabled - noop */
++	if (port->enabled) {
++		ret = 0;
++		goto unlock;
++	}
++
++	port->buffer_cb = buffer_cb;
++
++	ret = port_enable(instance, port);
++
++unlock:
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++int vchiq_mmal_port_disable(struct vchiq_mmal_instance *instance,
++			    struct vchiq_mmal_port *port)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	if (!port->enabled) {
++		mutex_unlock(&instance->vchiq_mutex);
++		return 0;
++	}
++
++	ret = port_disable(instance, port);
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++/* ports will be connected in a tunneled manner so data buffers
++ * are not handled by client.
++ */
++int vchiq_mmal_port_connect_tunnel(struct vchiq_mmal_instance *instance,
++				   struct vchiq_mmal_port *src,
++				   struct vchiq_mmal_port *dst)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	/* disconnect ports if connected */
++	if (src->connected) {
++		ret = port_disable(instance, src);
++		if (ret) {
++			pr_err("failed disabling src port(%d)\n", ret);
++			goto release_unlock;
++		}
++
++		/* do not need to disable the destination port as they
++		 * are connected and it is done automatically
++		 */
++
++		ret = port_action_handle(instance, src,
++					 MMAL_MSG_PORT_ACTION_TYPE_DISCONNECT,
++					 src->connected->component->handle,
++					 src->connected->handle);
++		if (ret < 0) {
++			pr_err("failed disconnecting src port\n");
++			goto release_unlock;
++		}
++		src->connected->enabled = false;
++		src->connected = NULL;
++	}
++
++	if (!dst) {
++		/* do not make new connection */
++		ret = 0;
++		pr_debug("not making new connection\n");
++		goto release_unlock;
++	}
++
++	/* copy src port format to dst */
++	dst->format.encoding = src->format.encoding;
++	dst->es.video.width = src->es.video.width;
++	dst->es.video.height = src->es.video.height;
++	dst->es.video.crop.x = src->es.video.crop.x;
++	dst->es.video.crop.y = src->es.video.crop.y;
++	dst->es.video.crop.width = src->es.video.crop.width;
++	dst->es.video.crop.height = src->es.video.crop.height;
++	dst->es.video.frame_rate.num = src->es.video.frame_rate.num;
++	dst->es.video.frame_rate.den = src->es.video.frame_rate.den;
++
++	/* set new format */
++	ret = port_info_set(instance, dst);
++	if (ret) {
++		pr_debug("setting port info failed\n");
++		goto release_unlock;
++	}
++
++	/* read what has actually been set */
++	ret = port_info_get(instance, dst);
++	if (ret) {
++		pr_debug("read back port info failed\n");
++		goto release_unlock;
++	}
++
++	/* connect two ports together */
++	ret = port_action_handle(instance, src,
++				 MMAL_MSG_PORT_ACTION_TYPE_CONNECT,
++				 dst->component->handle, dst->handle);
++	if (ret < 0) {
++		pr_debug("connecting port %d:%d to %d:%d failed\n",
++			 src->component->handle, src->handle,
++			 dst->component->handle, dst->handle);
++		goto release_unlock;
++	}
++	src->connected = dst;
++
++release_unlock:
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++int vchiq_mmal_submit_buffer(struct vchiq_mmal_instance *instance,
++			     struct vchiq_mmal_port *port,
++			     struct mmal_buffer *buffer)
++{
++	unsigned long flags = 0;
++	int ret;
++
++#if defined(CONFIG_BCM_VC_SM_CMA)
++	/*
++	 * We really want to do this in mmal_vchi_buffer_init but can't as
++	 * videobuf2 won't let us have the dmabuf there.
++	 */
++	if (port->zero_copy && buffer->dma_buf && !buffer->vcsm_handle) {
++		pr_err("%s: import dmabuf %p\n",
++		       __func__, buffer->dma_buf);
++		ret = vc_sm_cma_import_dmabuf(buffer->dma_buf,
++					      &buffer->vcsm_handle);
++		if (ret) {
++			pr_err("%s: vc_sm_import_dmabuf_fd failed, ret %d\n",
++			       __func__, ret);
++			return ret;
++		}
++
++		buffer->vc_handle = vc_sm_cma_int_handle(buffer->vcsm_handle);
++		if (!buffer->vc_handle) {
++			pr_err("%s: vc_sm_int_handle failed %d\n",
++			       __func__, ret);
++			vc_sm_cma_free(buffer->vcsm_handle);
++			return ret;
++		}
++		pr_err("%s: import dmabuf %p - got vc handle %08X\n",
++		       __func__, buffer->dma_buf, buffer->vc_handle);
++	}
++#endif
++
++	ret = buffer_from_host(instance, port, buffer);
++	if (ret == -EINVAL) {
++		/* Port is disabled. Queue for when it is enabled. */
++		spin_lock_irqsave(&port->slock, flags);
++		list_add_tail(&buffer->list, &port->buffers);
++		spin_unlock_irqrestore(&port->slock, flags);
++	}
++
++	return 0;
++}
++
++int mmal_vchi_buffer_init(struct vchiq_mmal_instance *instance,
++			  struct mmal_buffer *buf)
++{
++	struct mmal_msg_context *msg_context = get_msg_context(instance);
++
++	if (IS_ERR(msg_context))
++		return (PTR_ERR(msg_context));
++
++	buf->msg_context = msg_context;
++
++	return 0;
++}
++
++int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf)
++{
++	struct mmal_msg_context *msg_context =
++			(struct mmal_msg_context *)buf->msg_context;
++
++	if (msg_context)
++		release_msg_context(msg_context);
++	buf->msg_context = NULL;
++
++#if defined(CONFIG_BCM_VC_SM_CMA)
++	pr_err("%s: vcsm_handle %d\n",
++	       __func__, buf->vcsm_handle);
++	if (buf->vcsm_handle) {
++		int ret;
++
++		pr_err("%s: vc_sm_cma_free on handle %d\n", __func__,
++		       buf->vcsm_handle);
++		ret = vc_sm_cma_free(buf->vcsm_handle);
++		if (ret)
++			pr_err("%s: vcsm_free failed, ret %d\n", __func__, ret);
++	}
++#endif
++	return 0;
++}
++
++/* Initialise a mmal component and its ports
++ *
++ */
++int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
++			      const char *name,
++			      struct vchiq_mmal_component **component_out)
++{
++	int ret;
++	int idx;		/* port index */
++	struct vchiq_mmal_component *component;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	if (instance->component_idx == VCHIQ_MMAL_MAX_COMPONENTS) {
++		ret = -EINVAL;	/* todo is this correct error? */
++		goto unlock;
++	}
++
++	component = &instance->component[instance->component_idx];
++
++	ret = create_component(instance, component, name);
++	if (ret < 0)
++		goto unlock;
++
++	/* ports info needs gathering */
++	component->control.type = MMAL_PORT_TYPE_CONTROL;
++	component->control.index = 0;
++	component->control.component = component;
++	spin_lock_init(&component->control.slock);
++	INIT_LIST_HEAD(&component->control.buffers);
++	ret = port_info_get(instance, &component->control);
++	if (ret < 0)
++		goto release_component;
++
++	for (idx = 0; idx < component->inputs; idx++) {
++		component->input[idx].type = MMAL_PORT_TYPE_INPUT;
++		component->input[idx].index = idx;
++		component->input[idx].component = component;
++		spin_lock_init(&component->input[idx].slock);
++		INIT_LIST_HEAD(&component->input[idx].buffers);
++		ret = port_info_get(instance, &component->input[idx]);
++		if (ret < 0)
++			goto release_component;
++	}
++
++	for (idx = 0; idx < component->outputs; idx++) {
++		component->output[idx].type = MMAL_PORT_TYPE_OUTPUT;
++		component->output[idx].index = idx;
++		component->output[idx].component = component;
++		spin_lock_init(&component->output[idx].slock);
++		INIT_LIST_HEAD(&component->output[idx].buffers);
++		ret = port_info_get(instance, &component->output[idx]);
++		if (ret < 0)
++			goto release_component;
++	}
++
++	for (idx = 0; idx < component->clocks; idx++) {
++		component->clock[idx].type = MMAL_PORT_TYPE_CLOCK;
++		component->clock[idx].index = idx;
++		component->clock[idx].component = component;
++		spin_lock_init(&component->clock[idx].slock);
++		INIT_LIST_HEAD(&component->clock[idx].buffers);
++		ret = port_info_get(instance, &component->clock[idx]);
++		if (ret < 0)
++			goto release_component;
++	}
++
++	instance->component_idx++;
++
++	*component_out = component;
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return 0;
++
++release_component:
++	destroy_component(instance, component);
++unlock:
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++/*
++ * cause a mmal component to be destroyed
++ */
++int vchiq_mmal_component_finalise(struct vchiq_mmal_instance *instance,
++				  struct vchiq_mmal_component *component)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	if (component->enabled)
++		ret = disable_component(instance, component);
++
++	ret = destroy_component(instance, component);
++
++	instance->component_idx--;
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++/*
++ * cause a mmal component to be enabled
++ */
++int vchiq_mmal_component_enable(struct vchiq_mmal_instance *instance,
++				struct vchiq_mmal_component *component)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	if (component->enabled) {
++		mutex_unlock(&instance->vchiq_mutex);
++		return 0;
++	}
++
++	ret = enable_component(instance, component);
++	if (ret == 0)
++		component->enabled = true;
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++/*
++ * cause a mmal component to be enabled
++ */
++int vchiq_mmal_component_disable(struct vchiq_mmal_instance *instance,
++				 struct vchiq_mmal_component *component)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	if (!component->enabled) {
++		mutex_unlock(&instance->vchiq_mutex);
++		return 0;
++	}
++
++	ret = disable_component(instance, component);
++	if (ret == 0)
++		component->enabled = false;
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++int vchiq_mmal_version(struct vchiq_mmal_instance *instance,
++		       u32 *major_out, u32 *minor_out)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	ret = get_version(instance, major_out, minor_out);
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	return ret;
++}
++
++int vchiq_mmal_finalise(struct vchiq_mmal_instance *instance)
++{
++	int status = 0;
++
++	if (!instance)
++		return -EINVAL;
++
++	if (mutex_lock_interruptible(&instance->vchiq_mutex))
++		return -EINTR;
++
++	vchi_service_use(instance->handle);
++
++	status = vchi_service_close(instance->handle);
++	if (status != 0)
++		pr_err("mmal-vchiq: VCHIQ close failed");
++
++	mutex_unlock(&instance->vchiq_mutex);
++
++	vfree(instance->bulk_scratch);
++
++	mmal_context_map_destroy(&instance->context_map);
++
++	kfree(instance);
++
++	return status;
++}
++
++int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance)
++{
++	static VCHI_CONNECTION_T *vchi_connection;
++
++	static VCHI_INSTANCE_T vchi_instance;
++
++	struct vchiq_mmal_instance *instance;
++	int status;
++	SERVICE_CREATION_T params = {
++		.version		= VCHI_VERSION_EX(VC_MMAL_VER, VC_MMAL_MIN_VER),
++		.service_id		= VC_MMAL_SERVER_NAME,
++		.connection		= vchi_connection,
++		.rx_fifo_size		= 0,
++		.tx_fifo_size		= 0,
++		.callback		= service_callback,
++		.callback_param		= NULL,
++		.want_unaligned_bulk_rx = 1,
++		.want_unaligned_bulk_tx = 1,
++		.want_crc		= 0
++	};
++
++	/* compile time checks to ensure structure size as they are
++	 * directly (de)serialised from memory.
++	 */
++
++	/* ensure the header structure has packed to the correct size */
++	BUILD_BUG_ON(sizeof(struct mmal_msg_header) != 24);
++
++	/* ensure message structure does not exceed maximum length */
++	BUILD_BUG_ON(sizeof(struct mmal_msg) > MMAL_MSG_MAX_SIZE);
++
++	/* mmal port struct is correct size */
++	BUILD_BUG_ON(sizeof(struct mmal_port) != 64);
++
++	/* create a vchi instance */
++	status = vchi_initialise(&vchi_instance);
++	if (status) {
++		pr_err("Failed to initialise VCHI instance (status=%d)\n",
++		       status);
++		return -EIO;
++	}
++
++	status = vchi_connect(NULL, 0, vchi_instance);
++	if (status) {
++		pr_err("Failed to connect VCHI instance (status=%d)\n", status);
++		return -EIO;
++	}
++
++	instance = kzalloc(sizeof(*instance), GFP_KERNEL);
++
++	if (!instance)
++		return -ENOMEM;
++
++	mutex_init(&instance->vchiq_mutex);
++
++	instance->bulk_scratch = vmalloc(PAGE_SIZE);
++
++	status = mmal_context_map_init(&instance->context_map);
++	if (status) {
++		pr_err("Failed to init context map (status=%d)\n", status);
++		kfree(instance);
++		return status;
++	}
++
++	params.callback_param = instance;
++
++	status = vchi_service_open(vchi_instance, &params, &instance->handle);
++	if (status) {
++		pr_err("Failed to open VCHI service connection (status=%d)\n",
++		       status);
++		goto err_close_services;
++	}
++
++	vchi_service_release(instance->handle);
++
++	*out_instance = instance;
++
++	return 0;
++
++err_close_services:
++
++	vchi_service_close(instance->handle);
++	vfree(instance->bulk_scratch);
++	kfree(instance);
++	return -ENODEV;
++}
+diff --git a/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.h b/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.h
+new file mode 100644
+index 000000000000..6293445e3a5b
+--- /dev/null
++++ b/drivers/staging/vc04_services/bcm2835-codec/mmal-vchiq.h
+@@ -0,0 +1,170 @@
++/*
++ * Broadcom BM2835 V4L2 driver
++ *
++ * Copyright © 2013 Raspberry Pi (Trading) Ltd.
++ *
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file COPYING in the main directory of this archive
++ * for more details.
++ *
++ * Authors: Vincent Sanders @ Collabora
++ *          Dave Stevenson @ Broadcom
++ *		(now dave.stevenson@raspberrypi.org)
++ *          Simon Mellor @ Broadcom
++ *          Luke Diamand @ Broadcom
++ *
++ * MMAL interface to VCHIQ message passing
++ */
++
++#ifndef MMAL_VCHIQ_H
++#define MMAL_VCHIQ_H
++
++#include "mmal-msg-format.h"
++#include "mmal-common.h"
++
++#define MAX_PORT_COUNT 4
++
++/* Maximum size of the format extradata. */
++#define MMAL_FORMAT_EXTRADATA_MAX_SIZE 128
++
++struct vchiq_mmal_instance;
++
++enum vchiq_mmal_es_type {
++	MMAL_ES_TYPE_UNKNOWN,     /**< Unknown elementary stream type */
++	MMAL_ES_TYPE_CONTROL,     /**< Elementary stream of control commands */
++	MMAL_ES_TYPE_AUDIO,       /**< Audio elementary stream */
++	MMAL_ES_TYPE_VIDEO,       /**< Video elementary stream */
++	MMAL_ES_TYPE_SUBPICTURE   /**< Sub-picture elementary stream */
++};
++
++struct vchiq_mmal_port_buffer {
++	unsigned int num; /* number of buffers */
++	u32 size; /* size of buffers */
++	u32 alignment; /* alignment of buffers */
++};
++
++struct vchiq_mmal_port;
++
++typedef void (*vchiq_mmal_buffer_cb)(
++		struct vchiq_mmal_instance  *instance,
++		struct vchiq_mmal_port *port,
++		int status, struct mmal_buffer *buffer);
++
++struct vchiq_mmal_port {
++	bool enabled;
++	u32 handle;
++	u32 type; 	/* port type (enum vchiq_mmal_port_type), cached to use
++			 * on port info set
++			 */
++	u32 index; /* port index, cached to use on port info set */
++
++	/* component port belongs to, allows simple deref */
++	struct vchiq_mmal_component *component;
++
++	struct vchiq_mmal_port *connected; /* port conencted to */
++
++	/* buffer info */
++	struct vchiq_mmal_port_buffer minimum_buffer;
++	struct vchiq_mmal_port_buffer recommended_buffer;
++	struct vchiq_mmal_port_buffer current_buffer;
++
++	/* stream format */
++	struct mmal_es_format_local format;
++	/* elementary stream format */
++	union mmal_es_specific_format es;
++
++	/* data buffers to fill */
++	struct list_head buffers;
++	/* lock to serialise adding and removing buffers from list */
++	spinlock_t slock;
++	/* callback on buffer completion */
++	vchiq_mmal_buffer_cb buffer_cb;
++	/* callback context */
++	void *cb_ctx;
++
++	bool zero_copy;
++};
++
++struct vchiq_mmal_component {
++	bool enabled;
++	u32 handle;  /* VideoCore handle for component */
++	u32 inputs;  /* Number of input ports */
++	u32 outputs; /* Number of output ports */
++	u32 clocks;  /* Number of clock ports */
++	struct vchiq_mmal_port control; /* control port */
++	struct vchiq_mmal_port input[MAX_PORT_COUNT]; /* input ports */
++	struct vchiq_mmal_port output[MAX_PORT_COUNT]; /* output ports */
++	struct vchiq_mmal_port clock[MAX_PORT_COUNT]; /* clock ports */
++};
++
++int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance);
++int vchiq_mmal_finalise(struct vchiq_mmal_instance *instance);
++
++/* Initialise a mmal component and its ports
++ *
++ */
++int vchiq_mmal_component_init(
++		struct vchiq_mmal_instance *instance,
++		const char *name,
++		struct vchiq_mmal_component **component_out);
++
++int vchiq_mmal_component_finalise(
++		struct vchiq_mmal_instance *instance,
++		struct vchiq_mmal_component *component);
++
++int vchiq_mmal_component_enable(
++		struct vchiq_mmal_instance *instance,
++		struct vchiq_mmal_component *component);
++
++int vchiq_mmal_component_disable(
++		struct vchiq_mmal_instance *instance,
++		struct vchiq_mmal_component *component);
++
++/* enable a mmal port
++ *
++ * enables a port and if a buffer callback provided enque buffer
++ * headers as appropriate for the port.
++ */
++int vchiq_mmal_port_enable(
++		struct vchiq_mmal_instance *instance,
++		struct vchiq_mmal_port *port,
++		vchiq_mmal_buffer_cb buffer_cb);
++
++/* disable a port
++ *
++ * disable a port will dequeue any pending buffers
++ */
++int vchiq_mmal_port_disable(struct vchiq_mmal_instance *instance,
++			    struct vchiq_mmal_port *port);
++
++int vchiq_mmal_port_parameter_set(struct vchiq_mmal_instance *instance,
++				  struct vchiq_mmal_port *port,
++				  u32 parameter,
++				  void *value,
++				  u32 value_size);
++
++int vchiq_mmal_port_parameter_get(struct vchiq_mmal_instance *instance,
++				  struct vchiq_mmal_port *port,
++				  u32 parameter,
++				  void *value,
++				  u32 *value_size);
++
++int vchiq_mmal_port_set_format(struct vchiq_mmal_instance *instance,
++			       struct vchiq_mmal_port *port);
++
++int vchiq_mmal_port_connect_tunnel(struct vchiq_mmal_instance *instance,
++				   struct vchiq_mmal_port *src,
++			    struct vchiq_mmal_port *dst);
++
++int vchiq_mmal_version(struct vchiq_mmal_instance *instance,
++		       u32 *major_out,
++		       u32 *minor_out);
++
++int vchiq_mmal_submit_buffer(struct vchiq_mmal_instance *instance,
++			     struct vchiq_mmal_port *port,
++			     struct mmal_buffer *buf);
++
++int mmal_vchi_buffer_init(struct vchiq_mmal_instance *instance,
++			  struct mmal_buffer *buf);
++int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf);
++#endif /* MMAL_VCHIQ_H */
+-- 
+2.17.0
+

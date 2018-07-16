@@ -1,0 +1,115 @@
+From 2e3c836821092426d34e7b14edf56139f36cc7f4 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 24 May 2017 16:55:16 +0100
+Subject: [PATCH 28/80] VCHIQ: Handle buffers that fail get_user_pages
+
+Take a buffer allocated from CMA or other kernel
+memory,  and then mmap called to map it into userspace it
+will get mapped via remap_pfn_range which sets vm_flags with
+VM_IO | VM_PFNMAP.
+If that is passed back in to VCHIQ to be transferred back
+to Videocore, then get_user_pages fails when it calls in
+to check_vma_flags.
+
+Add handling for buffers that fail get_user_pages with
+-EFAULT due to VM_PFNMAP.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../interface/vchiq_arm/vchiq_2835_arm.c      | 64 +++++++++++++++++--
+ 1 file changed, 60 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_2835_arm.c b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_2835_arm.c
+index 28c6d13eb1fd..da1c17eaca09 100644
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_2835_arm.c
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_2835_arm.c
+@@ -490,16 +490,71 @@ create_pagelist(char __user *buf, size_t count, unsigned short type,
+ 		}
+ 		/* do not try and release ioremapped pages */
+ 	} else {
++		unsigned long buf_start = (unsigned long)buf & PAGE_MASK;
++
+ 		down_read(&task->mm->mmap_sem);
+ 		actual_pages = get_user_pages(
+-					  (unsigned long)buf & PAGE_MASK,
++					  buf_start,
+ 					  num_pages,
+ 					  (type == PAGELIST_READ) ? FOLL_WRITE : 0,
+ 					  pages,
+ 					  NULL /*vmas */);
+ 		up_read(&task->mm->mmap_sem);
+ 
+-		if (actual_pages != num_pages) {
++		if (actual_pages <= 0) {
++			struct vm_area_struct *vma;
++
++			vma = find_exact_vma(task->mm,
++					     buf_start,
++					     buf_start + (num_pages * PAGE_SIZE));
++			if (vma &&
++			    vma->vm_flags & VM_PFNMAP) {
++				/* PFN MAP, so get_user_pages would fail */
++				unsigned long pfn;
++				int ret;
++				unsigned long length = count;
++				unsigned int off = offset;
++
++				for (actual_pages = 0; actual_pages < num_pages;
++				     actual_pages++) {
++					struct page *page;
++					size_t bytes;
++
++					ret = follow_pfn(vma,
++							 buf_start,
++							 &pfn);
++					if (ret) {
++						printk("Follow_pfn failed, error %d\n", ret);
++						/* FIXME handle the error */
++					}
++					page = pfn_to_page(pfn);
++					if (IS_ERR(page)) {
++						printk("pfn_to_age failed, error %d\n", IS_ERR(page));
++						/* FIXME handle the error */
++					}
++
++					bytes = PAGE_SIZE - off;
++
++					if (bytes > length)
++						bytes = length;
++					pages[actual_pages] = page;
++					length -= bytes;
++					off = 0;
++					buf_start += PAGE_SIZE;
++				}
++				/* do not try and release PFNMAP pages */
++				pagelistinfo->pages_need_release = 0;
++			} else {
++				while (actual_pages > 0) {
++					actual_pages--;
++					put_page(pages[actual_pages]);
++				}
++				cleanup_pagelistinfo(pagelistinfo);
++				if (actual_pages == 0)
++					actual_pages = -ENOMEM;
++				return NULL;
++			}
++		} else if (actual_pages != num_pages) {
+ 			vchiq_log_info(vchiq_arm_log_level,
+ 				       "create_pagelist - only %d/%d pages locked",
+ 				       actual_pages,
+@@ -513,9 +568,10 @@ create_pagelist(char __user *buf, size_t count, unsigned short type,
+ 			}
+ 			cleanup_pagelistinfo(pagelistinfo);
+ 			return NULL;
++		} else {
++			/* release user pages */
++			pagelistinfo->pages_need_release = 1;
+ 		}
+-		 /* release user pages */
+-		pagelistinfo->pages_need_release = 1;
+ 	}
+ 
+ 	/*
+-- 
+2.17.0
+

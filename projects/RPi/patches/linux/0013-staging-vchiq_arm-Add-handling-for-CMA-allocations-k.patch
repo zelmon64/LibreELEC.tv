@@ -1,0 +1,48 @@
+From 5dabb1d3360a63745ead82c3a81cedba63bc6180 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Mon, 12 Feb 2018 17:35:37 +0000
+Subject: [PATCH 13/80] staging: vchiq_arm: Add handling for CMA
+ allocations/kernel threads.
+
+If using CMA allocations from V4L2 or other kthread, then
+there is no mapping required as it is passing in a list of pages.
+Handle this case.
+Based on Eric Anholt's original patch on a 4.4 kernel.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../interface/vchiq_arm/vchiq_2835_arm.c       | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_2835_arm.c b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_2835_arm.c
+index be08849175ea..28c6d13eb1fd 100644
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_2835_arm.c
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_2835_arm.c
+@@ -471,6 +471,24 @@ create_pagelist(char __user *buf, size_t count, unsigned short type,
+ 			off = 0;
+ 		}
+ 		/* do not try and release vmalloc pages */
++	} else if (!task->mm) {
++		/* in a kthread, just map to pages */
++		unsigned long length = count;
++		unsigned int off = offset;
++
++		for (actual_pages = 0; actual_pages < num_pages;
++		     actual_pages++) {
++			struct page *pg = virt_to_page(buf + (actual_pages *
++							      PAGE_SIZE));
++			size_t bytes = PAGE_SIZE - off;
++
++			if (bytes > length)
++				bytes = length;
++			pages[actual_pages] = pg;
++			length -= bytes;
++			off = 0;
++		}
++		/* do not try and release ioremapped pages */
+ 	} else {
+ 		down_read(&task->mm->mmap_sem);
+ 		actual_pages = get_user_pages(
+-- 
+2.17.0
+

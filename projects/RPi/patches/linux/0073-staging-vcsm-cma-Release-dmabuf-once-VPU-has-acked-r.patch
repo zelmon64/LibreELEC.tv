@@ -1,0 +1,52 @@
+From dfffd89997073464cc2dffac283eb6d1019a9d0b Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Fri, 18 May 2018 14:23:06 +0100
+Subject: [PATCH 73/80] staging: vcsm-cma: Release dmabuf once VPU has acked
+ release.
+
+Now that videobuf2 won't fail reqbufs(0) if the buffers are
+mapped or imported we can wait until the VPU has confirmed
+it has released the mapping before releasing the dmabuf.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../staging/vc04_services/vc-sm-cma/vc_sm.c   | 23 -------------------
+ 1 file changed, 23 deletions(-)
+
+diff --git a/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+index b420a3b45b97..5b24f91b647b 100644
+--- a/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+@@ -378,29 +378,6 @@ void vc_sm_import_dma_buf_release(struct dma_buf *dmabuf)
+ 
+ 	res->in_use = false;
+ 
+-	/*
+-	 * FIXME: This should be done after the VPU has released the dma_buf,
+-	 * but currently Videobuf2 objects if anything is holding a reference
+-	 * after it thinks it should.
+-	 */
+-	/* Handle cleaning up imported dmabufs */
+-	if (res->sgt) {
+-		dma_buf_unmap_attachment(res->attach, res->sgt,
+-					 DMA_BIDIRECTIONAL);
+-		res->sgt = NULL;
+-	}
+-	if (res->attach) {
+-		dma_buf_detach(res->dma_buf, res->attach);
+-		res->attach = NULL;
+-	}
+-
+-	/* Release the dma_buf (whether ours or imported) */
+-	if (res->import_dma_buf) {
+-		dma_buf_put(res->import_dma_buf);
+-		res->import_dma_buf = NULL;
+-		res->dma_buf = NULL;
+-	}
+-
+ 	vc_sm_release_resource(res, 0);
+ }
+ 
+-- 
+2.17.0
+
